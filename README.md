@@ -13,7 +13,7 @@
 - Preserves v0.1 IndexedDB records; schema upgrade adds processed-message tracking.
 
 ## Install/update
-GitHub repository: https://github.com/casazabot-sudo/InventorySystem
+GitHub repository: (https://github.com/casazabot-sudo/SillyTavern-Inventory-System)
 Update through SillyTavern's extension manager or pull/update the repository, then refresh ST. Existing IndexedDB data is retained.
 
 ## AI action block format
