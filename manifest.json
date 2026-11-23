@@ -1,0 +1,14 @@
+{
+  "display_name": "Inventory System",
+  "loading_order": 20,
+  "requires": [],
+  "optional": [],
+  "dependencies": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Inventory System Contributors",
+  "version": "0.1.0",
+  "homePage": "https://github.com/USERNAME/InventorySystem",
+  "auto_update": true,
+  "generate_interceptor": "inventorySystemPromptInterceptor"
+}
