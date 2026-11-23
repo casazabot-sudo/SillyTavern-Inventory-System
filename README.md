@@ -25,7 +25,7 @@ Inventory System is a client-side SillyTavern UI extension prototype. It keeps i
 1. Install Git if your SillyTavern setup does not already have it.
 2. Open SillyTavern → **Extensions** → **Install Extension**.
 3. Paste this repository URL (replace with the actual repository after publishing):
-   `https://github.com/USERNAME/InventorySystem`
+   `https://github.com/casazabot-sudo/InventorySystem`
 4. Choose the installation target and install.
 5. Refresh/restart SillyTavern if prompted, then enable Inventory System in Extensions.
 
