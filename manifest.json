@@ -1,11 +1,11 @@
 {
-  "display_name": "Dynamic Relationships + Inventory",
+  "display_name": "Dynamic Relationships",
   "loading_order": 20,
   "js": "index.js",
   "css": "style.css",
-  "author": "casazabot-sudo",
-  "version": "0.9.0",
-  "homePage": "https://github.com/casazabot-sudo/DynamicRelationships",
+  "author": "Dynamic Relationships contributors",
+  "version": "0.8.5",
+  "homePage": "",
   "auto_update": false,
   "minimum_client_version": "1.19.0"
 }

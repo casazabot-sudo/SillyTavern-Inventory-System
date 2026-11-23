@@ -196,7 +196,7 @@
     white-space: pre-wrap;
     word-break: break-word;
 }
-/* Integrated inventory styles */
+/* Inventory module styles */
 #inventory-system-panel .inline-drawer-content{display:none;padding:8px}
 #inventory-system-panel .inline-drawer-content.open{display:block}
 #inventory-system-panel .inv-toolbar,#inventory-system-panel .inv-grid{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}

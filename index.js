@@ -1,4 +1,4 @@
-/* Dynamic Relationships 0.8.3
+/* Dynamic Relationships 0.8.5 + Inventory Module
  * Chat-scoped relationship database + generated lorebook projection
  * + scene, character & thought tracking + context history stripping.
  */
@@ -10,7 +10,7 @@
     const LEGACY_KEY = 'dynamic_relationships_v1';
     const ROOT_ID = 'dynamic-relationships-extension';
     const MACRO_NAME = 'dr_relationships';
-    const VERSION = '0.8.3';
+    const VERSION = '0.8.5';
     const METRICS = ['trust', 'affection', 'respect', 'attachment', 'attraction', 'fear', 'jealousy', 'irritation', 'admiration'];
     const LABELS = {
         trust: 'Доверие', affection: 'Симпатия', respect: 'Уважение',
@@ -1526,7 +1526,7 @@ ${body}
     else init();
 })();
 
-/* Integrated Inventory module: same extension prompt lifecycle; no separate generate interceptor. */
+/* Optional Inventory module integrated into Dynamic Relationships. */
 /* Inventory System v0.2.4 - Automatic entity registration */
 (() => {
   'use strict';
@@ -1623,7 +1623,6 @@ ${body}
     return {type:a.type,item:a.item,quantity,owner:ownerName(state,a.owner),status:'success',message:details};
   }
   async function processMessage(key,messageKey,text){
-    if(settings().inventoryEnabled===false){await log(key,'ai_action_skipped',{status:'skipped',message:'Inventory module is disabled',messageKey});return {status:'disabled_module'};}
     if(settings().autoApply===false){await log(key,'ai_action_skipped',{status:'skipped',message:'Auto-apply is disabled',messageKey});return {status:'disabled'};}
     const prior=await dbOp('processed','readonly',s=>s.get([key,messageKey]));if(prior)return {status:'duplicate'};
     let block;try{block=extractActionBlock(text);}catch(e){await log(key,'ai_action_error',{status:'error',message:`Malformed action JSON: ${e.message}`,messageKey});return {status:'error',message:`Malformed action JSON: ${e.message}`};}
@@ -1641,9 +1640,9 @@ ${body}
     const results=[],runtimeAliases={};for(const [idx,a] of actions.entries()){try{const result=await applyOne(key,a,state,runtimeAliases);results.push(result);await log(key,'ai_action_result',{...result,messageKey,operation:idx+1});}catch(e){const failure={type:a.type,item:a.item||a.name,quantity:a.quantity||1,status:'error',message:e.message};results.push(failure);await log(key,'ai_action_result',{...failure,messageKey,operation:idx+1});await dbOp('processed','readwrite',s=>s.put({chatKey:key,messageKey,processedAt:new Date().toISOString(),partial:true}));return {status:'partial_or_failed',results,message:e.message};}}
     await dbOp('processed','readwrite',s=>s.put({chatKey:key,messageKey,processedAt:new Date().toISOString()}));return {status:'applied',results};
   }
-  function buildPanel(){if(document.getElementById(PANEL))return;const root=document.querySelector('#extensions_settings');if(!root)return;panel=document.createElement('div');panel.id=PANEL;panel.className='inline-drawer';panel.innerHTML=`<div class="inline-drawer-toggle inline-drawer-header"><b>Dynamic Relationships · Inventory Module</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div></div><div class="inline-drawer-content"><div class="inv-toolbar"><button class="menu_button" id="inv-refresh">Refresh</button><button class="menu_button" id="inv-backup">Backup</button><label class="menu_button">Restore<input id="inv-restore" type="file" accept=".json" hidden></label><label class="inv-auto"><input id="inv-module" type="checkbox"> Enable Inventory module (AI tracking)</label><label class="inv-auto"><input id="inv-auto" type="checkbox"> Auto-apply AI changes</label></div><div id="inv-chat" class="inv-small"></div><div id="inv-status" class="inv-status"></div><details class="inv-diagnostic" open><summary>AI pipeline diagnostics</summary><div id="inv-diagnostics">Idle · waiting for generation</div></details><div id="inv-content"></div><details class="inv-form" open><summary>Add item</summary><div class="inv-grid"><input id="inv-item-name" placeholder="Item name"><input id="inv-item-qty" type="number" min="1" value="1"><select id="inv-item-owner"><option value="">Owner</option></select><input id="inv-item-desc" placeholder="Description"><button class="menu_button" id="inv-add-item">Add</button></div></details><p class="inv-note">AI changes are experimental. Export backups regularly.</p></div>`;root.append(panel);
+  function buildPanel(){if(document.getElementById(PANEL))return;const root=document.querySelector('#extensions_settings');if(!root)return;panel=document.createElement('div');panel.id=PANEL;panel.className='inline-drawer';panel.innerHTML=`<div class="inline-drawer-toggle inline-drawer-header"><b>Inventory System · v0.3.0</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div></div><div class="inline-drawer-content"><div class="inv-toolbar"><button class="menu_button" id="inv-refresh">Refresh</button><button class="menu_button" id="inv-backup">Backup</button><label class="menu_button">Restore<input id="inv-restore" type="file" accept=".json" hidden></label><label class="inv-auto"><input id="inv-enabled" type="checkbox"> Enable Inventory module (AI tracking)</label><label class="inv-auto"><input id="inv-auto" type="checkbox"> Auto-apply AI changes</label></div><div id="inv-chat" class="inv-small"></div><div id="inv-status" class="inv-status"></div><details class="inv-diagnostic" open><summary>AI pipeline diagnostics</summary><div id="inv-diagnostics">Idle · waiting for generation</div></details><div id="inv-content"></div><details class="inv-form" open><summary>Add item</summary><div class="inv-grid"><input id="inv-item-name" placeholder="Item name"><input id="inv-item-qty" type="number" min="1" value="1"><select id="inv-item-owner"><option value="">Owner</option></select><input id="inv-item-desc" placeholder="Description"><button class="menu_button" id="inv-add-item">Add</button></div></details><p class="inv-note">AI changes are experimental. Export backups regularly.</p></div>`;root.append(panel);
     panel.querySelector('.inline-drawer-toggle').onclick=()=>{const c=panel.querySelector('.inline-drawer-content');c.classList.toggle('open');panel.querySelector('.inline-drawer-icon').classList.toggle('fa-circle-chevron-down');panel.querySelector('.inline-drawer-icon').classList.toggle('fa-circle-chevron-up');};
-    panel.querySelector('#inv-module').checked=settings().inventoryEnabled!==false;panel.querySelector('#inv-module').onchange=e=>{saveSettings({...settings(),inventoryEnabled:e.target.checked});updateInventoryPrompt();diagnostic('module',e.target.checked?'Inventory module enabled.':'Inventory module disabled; AI prompt and processing stopped.');if(panel.querySelector('#inv-status'))panel.querySelector('#inv-status').textContent=e.target.checked?'Inventory module enabled.':'Inventory module disabled. Manual inventory management remains available.';};panel.querySelector('#inv-auto').checked=settings().autoApply!==false;panel.querySelector('#inv-auto').onchange=e=>saveSettings({...settings(),autoApply:e.target.checked});panel.querySelector('#inv-refresh').onclick=refresh;panel.querySelector('#inv-backup').onclick=()=>currentKey&&exportBackup(currentKey);panel.querySelector('#inv-restore').onchange=async e=>{const f=e.target.files?.[0];if(!f||!currentKey)return;try{await importBackup(currentKey,f);await refresh();toastr.success('Inventory backup restored');}catch(err){toastr.error(err.message);}e.target.value='';};
+    panel.querySelector('#inv-enabled').checked=settings().enabled!==false;panel.querySelector('#inv-enabled').onchange=e=>{saveSettings({...settings(),enabled:e.target.checked});updateInventoryPrompt();diagnostic('module',e.target.checked?'Inventory module enabled.':'Inventory module disabled; prompt cleared.');};panel.querySelector('#inv-auto').checked=settings().autoApply!==false;panel.querySelector('#inv-auto').onchange=e=>saveSettings({...settings(),autoApply:e.target.checked});panel.querySelector('#inv-refresh').onclick=refresh;panel.querySelector('#inv-backup').onclick=()=>currentKey&&exportBackup(currentKey);panel.querySelector('#inv-restore').onchange=async e=>{const f=e.target.files?.[0];if(!f||!currentKey)return;try{await importBackup(currentKey,f);await refresh();toastr.success('Inventory backup restored');}catch(err){toastr.error(err.message);}e.target.value='';};
     panel.querySelector('#inv-add-item').onclick=async()=>{const n=panel.querySelector('#inv-item-name').value.trim();if(!n)return toastr.warning('Item name required');await addItem(currentKey,n,panel.querySelector('#inv-item-qty').value,panel.querySelector('#inv-item-owner').value,'',panel.querySelector('#inv-item-desc').value);panel.querySelector('#inv-item-name').value='';await refresh();};}
   function render(){
     if(!panel||!currentState)return;const {entities,items,events}=currentState;
@@ -1658,30 +1657,30 @@ ${body}
     panel.querySelectorAll('.inv-delete').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this item?'))return;await deleteRow(currentKey,b.dataset.type,b.dataset.id);await refresh();});
   }
   async function refresh(){if(!panel)buildPanel();currentKey=chatKey();if(!currentKey){panel.querySelector('#inv-chat').textContent='Open a chat to begin';return;}panel.querySelector('#inv-chat').textContent=`Separate local database · ${currentKey}`;try{currentState=await getState(currentKey);render();}catch(e){panel.querySelector('#inv-content').textContent=e.message;}}
+  function inventoryPromptText(){
+    return [
+      '[INVENTORY MODULE — CHARACTER REGISTRY & SINGLE INVENTORY]',
+      'Each registered character has one inventory list. Inventory lists are private and must not be disclosed or used by other characters unless established by scene events.',
+      'When a distinct NPC actively appears or participates for the first time, register them with create_entity and a stable alias. Do not register background mentions, duplicates, or hypothetical characters.',
+      'At the end of the reply, append a machine-readable HTML-comment block only if a completed scene event changes the registry or inventory: <!-- INVENTORY_ACTIONS {\"actions\":[...]} -->. Do not use code fences. No block for plans or hypotheticals.',
+      'Allowed action types: create_entity {type,name,kind,alias}; add {type,item,quantity,owner,description}; remove/consume {type,item,quantity,owner}; transfer {type,item,quantity,owner,toOwner}. Quantities are positive integers. Maximum 20 actions. Report only completed changes.',
+      'Never reveal inventory contents to characters. Inventory contents are not included in the prompt. Use stable aliases in action blocks. Example: <!-- INVENTORY_ACTIONS {\"actions\":[{\"type\":\"create_entity\",\"name\":\"Elara\",\"kind\":\"npc\",\"alias\":\"elara\"},{\"type\":\"add\",\"item\":\"Notebook\",\"quantity\":1,\"owner\":\"elara\"}]} -->'
+    ].join('\n');
+  }
   function updateInventoryPrompt(){
     const c=context(); if(typeof c?.setExtensionPrompt!=='function')return;
-    const key='dynamic_relationships_inventory';
     const types=c.extension_prompt_types||{IN_PROMPT:0,IN_CHAT:1,BEFORE_PROMPT:2};
     const roles=c.extension_prompt_roles||{SYSTEM:0,USER:1,ASSISTANT:2};
-    if(settings().inventoryEnabled===false){c.setExtensionPrompt(key,'',types.IN_CHAT,0,false,roles.SYSTEM);diagnostic('prompt','Inventory module disabled; prompt cleared.');return;}
-    const lines=[
-      '[DYNAMIC RELATIONSHIPS — INVENTORY MODULE]',
-      'Each registered character has one private inventory. No containers/storage locations are tracked. Inventory data is not included in prompt; never reveal or assume another character inventory contents unless scene-established.',
-      'When a distinct NPC first appears or directly participates in the current scene, register it using create_entity. Avoid background mentions, duplicates, hypotheticals. User and main character are auto-registered by the extension.',
-      'At the end of your response, append an INVENTORY_ACTIONS comment block only for completed changes to character registry or inventory: <!-- INVENTORY_ACTIONS {"actions":[...]} -->. No markdown fence. Do not output actions for plans or hypothetical events.',
-      'Allowed actions: create_entity {type:"create_entity",name,kind:"npc",alias}; add {type:"add",item,quantity,owner,description}; remove/consume {type:"remove"|"consume",item,quantity,owner}; transfer {type:"transfer",item,quantity,owner,toOwner}. Use owner names/aliases. Quantities positive integers. Max 20 actions. Only completed changes.',
-      'Do not create duplicate entities; use stable aliases in same block for newly created NPCs. The extension will process and validate the block after generation.'
-    ];
-    c.setExtensionPrompt(key,lines.join('\\n'),types.IN_CHAT,0,false,roles.SYSTEM);
-    diagnostic('prompt','Inventory protocol registered through Dynamic Relationships extension prompt (no generation interceptor).');
+    const enabled=settings().enabled!==false;
+    try{c.setExtensionPrompt('inventory_system_module',enabled?inventoryPromptText():'',types.IN_CHAT,0,false,roles.SYSTEM);}
+    catch(e){try{c.setExtensionPrompt('inventory_system_module',enabled?inventoryPromptText():'',types.IN_CHAT,0,false);}catch(err){console.warn('[Inventory Module] setExtensionPrompt failed',err);}}
+    const status=panel?.querySelector('#inv-status'); if(status)status.textContent=enabled?'Inventory prompt active.':'Inventory module disabled.';
   }
-  function cleanupPromptNotes(){return 0;}
   async function messageReceived(eventMessage){
     try{
-      if(settings().inventoryEnabled===false){diagnostic('response','Inventory module disabled; AI actions ignored.');return;}
+      if(settings().enabled===false){diagnostic('module','Inventory module disabled; AI response ignored.');return;}
       const key=chatKey();if(!key)return;
       const c=context(),chat=c.chat||[];
-      cleanupPromptNotes();
       diagnostic('response','MESSAGE_RECEIVED received; waiting briefly for chat message commit.');
       let chosen=null,text='';
       // Some ST builds emit MESSAGE_RECEIVED before the final assistant message is appended.
@@ -1705,5 +1704,5 @@ ${body}
       else if(res.status==='none'){diagnostic('parser','No action block returned.');if(statusEl)statusEl.textContent='No AI action block in assistant message.';await refresh();}
     }catch(e){diagnostic('database','Handler exception: '+e.message);panel?.querySelector('#inv-status')&&(panel.querySelector('#inv-status').textContent=`AI action error: ${e.message}`);toastr.warning(`No inventory update: ${e.message}`,'Inventory System');console.warn(e);}
   }
-  function init(){buildPanel();const c=context();updateInventoryPrompt();c.eventSource.on(c.event_types.APP_READY,buildPanel);c.eventSource.on(c.event_types.APP_READY,refresh);c.eventSource.on(c.event_types.CHAT_CHANGED,()=>{updateInventoryPrompt();refresh();});c.eventSource.on(c.event_types.MESSAGE_RECEIVED,(...args)=>messageReceived(args[0]));if(c.event_types.GENERATION_ENDED)c.eventSource.on(c.event_types.GENERATION_ENDED,cleanupPromptNotes);if(c.event_types.GENERATION_STOPPED)c.eventSource.on(c.event_types.GENERATION_STOPPED,cleanupPromptNotes);}init();
+  function init(){buildPanel();const c=context();updateInventoryPrompt();c.eventSource.on(c.event_types.APP_READY,()=>{buildPanel();updateInventoryPrompt();refresh();});c.eventSource.on(c.event_types.CHAT_CHANGED,()=>{updateInventoryPrompt();refresh();});c.eventSource.on(c.event_types.MESSAGE_RECEIVED,(...args)=>messageReceived(args[0]));}init();
 })();
