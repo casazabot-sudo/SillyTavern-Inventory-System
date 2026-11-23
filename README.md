@@ -1,42 +1,17 @@
-# SillyTavern Inventory System
+# Dynamic Relationships + Inventory Module v0.9.0
 
-A chat-local fantasy roleplay inventory extension for SillyTavern.
+Integrated Inventory is an optional module inside Dynamic Relationships. It uses the parent extension's prompt lifecycle and does not register a separate generation interceptor.
 
-## v0.3.1
+## Toggle
+- **Enable Inventory module (AI tracking)** controls whether inventory instructions are injected and whether AI inventory action blocks are processed.
+- When disabled, AI inventory actions are ignored. Manual inventory management, viewing, and backup/restore remain available.
+- **Auto-apply AI changes** is a separate control. When Inventory is enabled but auto-apply is off, AI action blocks are logged but not applied.
 
-### Stability hotfix
-- Generation interceptor now returns the prompt/chat array on every path.
-- Prompt injection is synchronous and does not wait for IndexedDB.
-- No inventory contents are exposed to the model.
+## Inventories
+Each registered character has a private, single inventory. Containers/storage locations are not modeled. The extension stores inventory data locally per chat.
 
-## v0.3.0
+## AI action protocol
+Assistant messages may include `<!-- INVENTORY_ACTIONS {"actions":[...]} -->` blocks. Supported action types: `create_entity`, `add`, `remove`, `consume`, `transfer`. The extension validates operations and logs outcomes.
 
-### Design
-- One inventory per registered character: user, main character, and NPCs.
-- `{{user}}` and the current main character are initialized automatically.
-- AI is instructed to register a newly introduced active-scene NPC with `create_entity` and use `INVENTORY_ACTIONS` for completed item changes.
-- Inventories are private; item lists are deliberately not sent in the prompt.
-- No tracked rings, bags, pockets, chests, or nested containers. Such legacy items are flattened into owner inventories during migration.
-
-### AI action protocol
-At the end of an assistant reply, the extension parses a hidden HTML-comment block or a plain marker fallback:
-
-```text
-<!-- INVENTORY_ACTIONS {"actions":[
-  {"type":"create_entity","name":"Elara","kind":"npc","alias":"elara"},
-  {"type":"add","item":"Notebook","quantity":1,"owner":"elara"}
-]} -->
-```
-
-Supported actions: `create_entity`, `add`, `remove`, `consume`, `transfer`. AI actions are subject to validation and duplicate-message protection. Auto-apply can be toggled in the panel.
-
-### Install / update
-1. Back up the inventory using the extension panel.
-2. Replace the installed extension files with this release's files.
-3. Reload SillyTavern.
-4. Open the inventory panel in each chat to run its v3 migration.
-
-The database is local and chat-specific. Legacy storage rows remain in the database for backup compatibility, but are no longer part of the UI or new item operations. Items formerly inside a container are moved to the owning character's single inventory. If the item had no owner, the old container's owner is used when available.
-
-## Diagnostics and limitations
-The source has been syntax-checked and the archive validated. This release has not been runtime-tested in SillyTavern. NPC auto-registration still relies on the model emitting the requested structured action block; the extension logs parser/AI pipeline status so failures can be diagnosed.
+## Diagnostics
+Use the AI pipeline diagnostics section to see prompt status, parsing and database outcomes. This package has been syntax-checked and archive-checked; it has not been runtime-tested in the user's SillyTavern instance.
