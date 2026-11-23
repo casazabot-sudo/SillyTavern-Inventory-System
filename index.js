@@ -1,4 +1,4 @@
-/* Inventory System v0.2.1 - action confirmations and inventory privacy */
+/* Inventory System v0.2.4 - Automatic entity registration */
 (() => {
   'use strict';
   const EXT='inventory-system', DB_NAME='SillyTavern_InventorySystem', DB_VERSION=2, PANEL='inventory-system-panel';
@@ -22,25 +22,41 @@
   async function importBackup(key,file){const d=JSON.parse(await file.text());if(!Array.isArray(d.entities)||!Array.isArray(d.items)||!Array.isArray(d.storages))throw Error('Invalid inventory backup');await ensureChat(key);for(const n of ['entities','storages','items','events'])for(const row of d[n]||[]){const v={...row,chatKey:key};if(n==='events'&&!v.eventId)v.eventId=uid('event');await dbOp(n,'readwrite',s=>s.put(v));}await log(key,'backup_import',{filename:file.name});}
   function settings(){try{return JSON.parse(localStorage.getItem(EXT+'_settings')||'{}');}catch{return {};}}
   function saveSettings(v){localStorage.setItem(EXT+'_settings',JSON.stringify(v));}
-  function extractActionBlock(text){const re=/<!--\s*INVENTORY_ACTIONS\s*([\s\S]*?)\s*-->/gi;let m,last;while((m=re.exec(text||''))!==null)last=m[1];if(!last)return null;return JSON.parse(last);}
+  function diagnostic(stage,message){const el=panel?.querySelector('#inv-diagnostics');if(el){el.textContent=`${new Date().toLocaleTimeString()} · ${stage}: ${message}`;el.dataset.stage=stage;}console.debug(`[Inventory System][${stage}] ${message}`);}
+  function extractActionBlock(text){
+    const source=String(text||'');
+    const candidates=[];
+    const comment=/<!--\s*INVENTORY_ACTIONS\s*([\s\S]*?)\s*-->/gi;let m;
+    while((m=comment.exec(source))!==null)candidates.push(m[1].trim());
+    const fenced=/```(?:json)?\s*([\s\S]*?)```/gi;
+    while((m=fenced.exec(source))!==null){const body=m[1].trim();if(body.includes('INVENTORY_ACTIONS'))candidates.push(body.replace(/^INVENTORY_ACTIONS\s*:?\s*/i,''));}
+    // Plain-text fallback marker. Extract balanced JSON so nested action objects work.
+    const marker=/INVENTORY_ACTIONS\s*:?\s*/gi;
+    while((m=marker.exec(source))!==null){let start=source.indexOf('{',m.index+m[0].length);if(start<0)continue;let depth=0,inString=false,escape=false;for(let i=start;i<source.length;i++){const ch=source[i];if(inString){if(escape)escape=false;else if(ch==='\\')escape=true;else if(ch==='"')inString=false;continue;}if(ch==='"'){inString=true;continue;}if(ch==='{')depth++;else if(ch==='}'){depth--;if(depth===0){candidates.push(source.slice(start,i+1));break;}}}}
+    if(!candidates.length)return null;
+    let lastError=null;for(const raw of candidates.reverse()){try{const cleaned=raw.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'').trim();return JSON.parse(cleaned);}catch(e){lastError=e;}}
+    throw new Error(`Action block JSON could not be parsed: ${lastError?.message||'unknown parse error'}`);
+  }
   function validate(key,block,state){
     if(!block||!Array.isArray(block.actions)||block.actions.length>20)throw Error('Action list invalid (maximum 20)');
-    const eids=new Set(state.entities.map(e=>e.entityId)),sids=new Set(state.storages.map(s=>s.storageId)),aliases=new Set();
-    const allowed=['add','remove','consume','transfer','move','create_storage'];
+    const eids=new Set(state.entities.map(e=>e.entityId)),sids=new Set(state.storages.map(s=>s.storageId)),entityAliases=new Set(),storageAliases=new Set();
+    const allowed=['add','remove','consume','transfer','move','create_storage','create_entity'];
     for(const [n,a] of block.actions.entries()){
       if(!allowed.includes(a.type))throw Error(`Action ${n+1}: unsupported type`);
       if(a.type==='add'&&!String(a.item||'').trim())throw Error(`Action ${n+1}: item name required`);
       if(a.type==='create_storage'&&!String(a.name||'').trim())throw Error(`Action ${n+1}: storage name required`);
+      if(a.type==='create_entity'&&!String(a.name||'').trim())throw Error(`Action ${n+1}: entity name required`);
       if(['remove','consume','transfer','move'].includes(a.type)&&!String(a.item||'').trim())throw Error(`Action ${n+1}: item name required`);
       if(a.quantity!==undefined&&(!Number.isInteger(Number(a.quantity))||Number(a.quantity)<1))throw Error(`Action ${n+1}: quantity must be a positive integer`);
       if(['remove','consume','transfer','move'].includes(a.type)&&(!Object.hasOwn(a,'owner')||!Object.hasOwn(a,'storage')))throw Error(`Action ${n+1}: source owner and storage fields must be explicit`);
-      if(a.owner&&!eids.has(a.owner))throw Error(`Action ${n+1}: owner ID unknown`);
-      if(a.toOwner&&!eids.has(a.toOwner))throw Error(`Action ${n+1}: recipient ID unknown`);
-      const checkStorage=(v,field)=>{if(v===undefined||v===''||v===null)return;if(sids.has(v))return;if(typeof v==='string'&&aliases.has(v))return;throw Error(`Action ${n+1}: ${field} storage ID/alias unknown (${v})`);};
+      if(a.owner&&!eids.has(a.owner)&&!entityAliases.has(a.owner))throw Error(`Action ${n+1}: owner ID/alias unknown`);
+      if(a.toOwner&&!eids.has(a.toOwner)&&!entityAliases.has(a.toOwner))throw Error(`Action ${n+1}: recipient ID/alias unknown`);
+      if(a.type==='create_entity'&&a.alias){if(entityAliases.has(a.alias)||storageAliases.has(a.alias))throw Error(`Action ${n+1}: duplicate alias ${a.alias}`);entityAliases.add(a.alias);}
+      const checkStorage=(v,field)=>{if(v===undefined||v===''||v===null)return;if(sids.has(v))return;if(typeof v==='string'&&storageAliases.has(v))return;throw Error(`Action ${n+1}: ${field} storage ID/alias unknown (${v})`);};
       checkStorage(a.storage,'source');checkStorage(a.toStorage,'destination');
       if(a.type==='transfer'&&!a.toOwner)throw Error(`Action ${n+1}: toOwner required`);
       if(a.type==='move'&&!Object.hasOwn(a,'toStorage'))throw Error(`Action ${n+1}: toStorage field required`);
-      if(a.type==='create_storage'&&a.alias){if(aliases.has(a.alias))throw Error(`Action ${n+1}: duplicate storage alias ${a.alias}`);aliases.add(a.alias);}
+      if(a.type==='create_storage'&&a.alias){if(entityAliases.has(a.alias)||storageAliases.has(a.alias))throw Error(`Action ${n+1}: duplicate alias ${a.alias}`);storageAliases.add(a.alias);}
     }
     return block.actions;
   }
@@ -49,6 +65,9 @@
   const storageName=(state,id)=>state.storages.find(s=>s.storageId===id)?.name||id||'Carried';
   async function verifyItemCount(key,name,owner,storage){const st=await getState(key);return st.items.filter(i=>i.name.toLowerCase()===String(name).toLowerCase()&&i.ownerId===(owner||'')&&i.storageId===(storage||'')).reduce((n,i)=>n+i.quantity,0);}
   async function applyOne(key,a,state,aliases={}){
+    const entityId=v=>v&&aliases[v]?aliases[v]:v||'';
+    a={...a,owner:entityId(a.owner),toOwner:entityId(a.toOwner)};
+    if(a.type==='create_entity'){const st=await getState(key);const existing=st.entities.find(e=>e.name.toLowerCase()===a.name.trim().toLowerCase());if(existing){if(a.alias)aliases[a.alias]=existing.entityId;return {type:a.type,item:a.name,status:'success',owner:existing.name,message:`Entity already registered: ${existing.name}`};}await addEntity(key,a.name,a.kind||'npc',undefined);const after=await getState(key),created=after.entities.find(e=>e.name.toLowerCase()===a.name.trim().toLowerCase());if(!created)throw Error(`Entity verification failed for ${a.name}`);if(a.alias)aliases[a.alias]=created.entityId;state.entities.push(created);return {type:a.type,item:a.name,status:'success',owner:created.name,message:`Registered ${a.kind||'npc'} ${created.name}`};}
     const storageId=v=>v&&aliases[v]?aliases[v]:v||'';
     a={...a,storage:storageId(a.storage),toStorage:storageId(a.toStorage)};
     if(a.type==='add'){
@@ -81,17 +100,18 @@
     if(!block){await log(key,'ai_action_none',{status:'none',message:'No inventory action block in assistant message',messageKey});return {status:'none'};}
     const state=await getState(key);let actions;try{actions=validate(key,block,state);}catch(e){await log(key,'ai_action_error',{status:'error',message:e.message,messageKey});return {status:'error',message:e.message};}
     // Preflight ordered operations with temporary storage aliases, including containers created earlier in this batch.
-    const shadow=state.items.map(i=>({...i})),shadowStorages=new Set(state.storages.map(st=>st.storageId)),aliases={};
+    const shadow=state.items.map(i=>({...i})),shadowStorages=new Set(state.storages.map(st=>st.storageId)),aliases={},entityAliases={};
     try{for(const [idx,a] of actions.entries()){
-      const resolve=v=>v&&aliases[v]?aliases[v]:v||'';const sourceStorage=resolve(a.storage),destStorage=resolve(a.toStorage);
+      const resolve=v=>v&&aliases[v]?aliases[v]:v||'',resolveOwner=v=>v&&entityAliases[v]?entityAliases[v]:v||'';const sourceStorage=resolve(a.storage),destStorage=resolve(a.toStorage),sourceOwner=resolveOwner(a.owner),targetOwner=resolveOwner(a.toOwner);
+      if(a.type==='create_entity'){if(a.alias)entityAliases[a.alias]=`__new_entity_${idx}__`;continue;}
       if(a.type==='create_storage'){if(a.alias)aliases[a.alias]=`__new_storage_${idx}__`;shadowStorages.add(aliases[a.alias]||`__new_storage_${idx}__`);continue;}
-      if(['remove','consume','transfer','move'].includes(a.type)){const matches=shadow.filter(i=>i.name.toLowerCase()===String(a.item).toLowerCase()&&i.ownerId===(a.owner||'')&&i.storageId===sourceStorage);const total=matches.reduce((n,i)=>n+i.quantity,0),requested=Number(a.quantity||total);if(total<requested)throw Error(`Insufficient quantity for ${a.item}: ${total} available, ${requested} requested`);let left=requested;for(const i of matches){const take=Math.min(left,i.quantity);i.quantity-=take;left-=take;if(left<=0)break;}if(a.type==='transfer')shadow.push({name:a.item,quantity:requested,ownerId:a.toOwner,storageId:sourceStorage});if(a.type==='move')shadow.push({name:a.item,quantity:requested,ownerId:a.owner||'',storageId:destStorage});}
-      else if(a.type==='add'){if(a.storage&& !shadowStorages.has(sourceStorage)&&!aliases[a.storage])throw Error(`Action ${idx+1}: storage target not found`);shadow.push({name:a.item,quantity:Number(a.quantity||1),ownerId:a.owner||'',storageId:sourceStorage});}
+      if(['remove','consume','transfer','move'].includes(a.type)){const matches=shadow.filter(i=>i.name.toLowerCase()===String(a.item).toLowerCase()&&i.ownerId===sourceOwner&&i.storageId===sourceStorage);const total=matches.reduce((n,i)=>n+i.quantity,0),requested=Number(a.quantity||total);if(total<requested)throw Error(`Insufficient quantity for ${a.item}: ${total} available, ${requested} requested`);let left=requested;for(const i of matches){const take=Math.min(left,i.quantity);i.quantity-=take;left-=take;if(left<=0)break;}if(a.type==='transfer')shadow.push({name:a.item,quantity:requested,ownerId:targetOwner,storageId:sourceStorage});if(a.type==='move')shadow.push({name:a.item,quantity:requested,ownerId:a.owner||'',storageId:destStorage});}
+      else if(a.type==='add'){if(a.storage&& !shadowStorages.has(sourceStorage)&&!aliases[a.storage])throw Error(`Action ${idx+1}: storage target not found`);shadow.push({name:a.item,quantity:Number(a.quantity||1),ownerId:sourceOwner,storageId:sourceStorage});}
     }}catch(e){await log(key,'ai_action_error',{status:'error',message:e.message,messageKey});return {status:'error',message:e.message};}
     const results=[],runtimeAliases={};for(const [idx,a] of actions.entries()){try{const result=await applyOne(key,a,state,runtimeAliases);results.push(result);await log(key,'ai_action_result',{...result,messageKey,operation:idx+1});}catch(e){const failure={type:a.type,item:a.item||a.name,quantity:a.quantity||1,status:'error',message:e.message};results.push(failure);await log(key,'ai_action_result',{...failure,messageKey,operation:idx+1});await dbOp('processed','readwrite',s=>s.put({chatKey:key,messageKey,processedAt:new Date().toISOString(),partial:true}));return {status:'partial_or_failed',results,message:e.message};}}
     await dbOp('processed','readwrite',s=>s.put({chatKey:key,messageKey,processedAt:new Date().toISOString()}));return {status:'applied',results};
   }
-  function buildPanel(){if(document.getElementById(PANEL))return;const root=document.querySelector('#extensions_settings');if(!root)return;panel=document.createElement('div');panel.id=PANEL;panel.className='inline-drawer';panel.innerHTML=`<div class="inline-drawer-toggle inline-drawer-header"><b>Inventory System · v0.2.2</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div></div><div class="inline-drawer-content"><div class="inv-toolbar"><button class="menu_button" id="inv-refresh">Refresh</button><button class="menu_button" id="inv-backup">Backup</button><label class="menu_button">Restore<input id="inv-restore" type="file" accept=".json" hidden></label><label class="inv-auto"><input id="inv-auto" type="checkbox"> Auto-apply AI changes</label></div><div id="inv-chat" class="inv-small"></div><div id="inv-status" class="inv-status"></div><div id="inv-content"></div><details class="inv-form"><summary>Create entity / NPC</summary><div class="inv-grid"><input id="inv-entity-name" placeholder="Name"><select id="inv-entity-kind"><option value="npc">NPC</option><option value="user">User</option><option value="char">Character</option></select><input id="inv-entity-id" placeholder="ID (optional)"><button class="menu_button" id="inv-add-entity">Create</button></div></details><details class="inv-form"><summary>Create storage</summary><div class="inv-grid"><input id="inv-storage-name" placeholder="Storage name"><select id="inv-storage-type"><option value="bag">Bag</option><option value="backpack">Backpack</option><option value="spatial_ring">Spatial ring</option><option value="spatial_pocket">Spatial pocket</option><option value="container">Container</option></select><select id="inv-storage-owner"><option value="">Owner</option></select><input id="inv-storage-desc" placeholder="Description"><button class="menu_button" id="inv-add-storage">Create</button></div></details><details class="inv-form" open><summary>Add item</summary><div class="inv-grid"><input id="inv-item-name" placeholder="Item name"><input id="inv-item-qty" type="number" min="1" value="1"><select id="inv-item-owner"><option value="">Owner</option></select><select id="inv-item-storage"><option value="">Carried</option></select><input id="inv-item-desc" placeholder="Description"><button class="menu_button" id="inv-add-item">Add</button></div></details><p class="inv-note">AI changes are experimental. Export backups regularly.</p></div>`;root.append(panel);
+  function buildPanel(){if(document.getElementById(PANEL))return;const root=document.querySelector('#extensions_settings');if(!root)return;panel=document.createElement('div');panel.id=PANEL;panel.className='inline-drawer';panel.innerHTML=`<div class="inline-drawer-toggle inline-drawer-header"><b>Inventory System · v0.2.4</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div></div><div class="inline-drawer-content"><div class="inv-toolbar"><button class="menu_button" id="inv-refresh">Refresh</button><button class="menu_button" id="inv-backup">Backup</button><label class="menu_button">Restore<input id="inv-restore" type="file" accept=".json" hidden></label><label class="inv-auto"><input id="inv-auto" type="checkbox"> Auto-apply AI changes</label></div><div id="inv-chat" class="inv-small"></div><div id="inv-status" class="inv-status"></div><details class="inv-diagnostic" open><summary>AI pipeline diagnostics</summary><div id="inv-diagnostics">Idle · waiting for generation</div></details><div id="inv-content"></div><details class="inv-form"><summary>Create entity / NPC</summary><div class="inv-grid"><input id="inv-entity-name" placeholder="Name"><select id="inv-entity-kind"><option value="npc">NPC</option><option value="user">User</option><option value="char">Character</option></select><input id="inv-entity-id" placeholder="ID (optional)"><button class="menu_button" id="inv-add-entity">Create</button></div></details><details class="inv-form"><summary>Create storage</summary><div class="inv-grid"><input id="inv-storage-name" placeholder="Storage name"><select id="inv-storage-type"><option value="bag">Bag</option><option value="backpack">Backpack</option><option value="spatial_ring">Spatial ring</option><option value="spatial_pocket">Spatial pocket</option><option value="container">Container</option></select><select id="inv-storage-owner"><option value="">Owner</option></select><input id="inv-storage-desc" placeholder="Description"><button class="menu_button" id="inv-add-storage">Create</button></div></details><details class="inv-form" open><summary>Add item</summary><div class="inv-grid"><input id="inv-item-name" placeholder="Item name"><input id="inv-item-qty" type="number" min="1" value="1"><select id="inv-item-owner"><option value="">Owner</option></select><select id="inv-item-storage"><option value="">Carried</option></select><input id="inv-item-desc" placeholder="Description"><button class="menu_button" id="inv-add-item">Add</button></div></details><p class="inv-note">AI changes are experimental. Export backups regularly.</p></div>`;root.append(panel);
     panel.querySelector('.inline-drawer-toggle').onclick=()=>{const c=panel.querySelector('.inline-drawer-content');c.classList.toggle('open');panel.querySelector('.inline-drawer-icon').classList.toggle('fa-circle-chevron-down');panel.querySelector('.inline-drawer-icon').classList.toggle('fa-circle-chevron-up');};
     panel.querySelector('#inv-auto').checked=settings().autoApply!==false;panel.querySelector('#inv-auto').onchange=e=>saveSettings({...settings(),autoApply:e.target.checked});panel.querySelector('#inv-refresh').onclick=refresh;panel.querySelector('#inv-backup').onclick=()=>currentKey&&exportBackup(currentKey);panel.querySelector('#inv-restore').onchange=async e=>{const f=e.target.files?.[0];if(!f||!currentKey)return;try{await importBackup(currentKey,f);await refresh();toastr.success('Inventory backup restored');}catch(err){toastr.error(err.message);}e.target.value='';};
     panel.querySelector('#inv-add-entity').onclick=async()=>{const n=panel.querySelector('#inv-entity-name').value.trim();if(!n)return toastr.warning('Name required');await addEntity(currentKey,n,panel.querySelector('#inv-entity-kind').value,panel.querySelector('#inv-entity-id').value.trim()||undefined);await refresh();};
@@ -111,19 +131,68 @@
     panel.querySelectorAll('.inv-delete').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this entry?'))return;await deleteRow(currentKey,b.dataset.type,b.dataset.id);await refresh();});panel.querySelectorAll('[data-move]').forEach(b=>b.onclick=async()=>{const id=b.dataset.move,owner=panel.querySelector(`[data-owner="${CSS.escape(id)}"]`).value,storage=panel.querySelector(`[data-storage="${CSS.escape(id)}"]`).value;await moveItem(currentKey,id,owner,storage);await refresh();});
   }
   async function refresh(){if(!panel)buildPanel();currentKey=chatKey();if(!currentKey){panel.querySelector('#inv-chat').textContent='Open a chat to begin';return;}panel.querySelector('#inv-chat').textContent=`Separate local database · ${currentKey}`;try{currentState=await getState(currentKey);render();}catch(e){panel.querySelector('#inv-content').textContent=e.message;}}
-  async function inventorySystemPromptInterceptor(chat){try{const key=chatKey();if(!key)return chat;const s=await getState(key);const lines=['[INVENTORY SYSTEM — PRIVATE STATE PROTOCOL]','IMPORTANT PRIVACY RULE: Inventory contents are private. Do not reveal, mention, hint at, search for, react to, or use another entity’s inventory contents unless that information has been explicitly learned in the story through observation, disclosure, or a completed exchange. The user, current character, and each NPC have separate private inventories. Never assume a character knows another owner’s items.','The extension deliberately does NOT provide item lists in this prompt to avoid exposing private inventories. Use only items explicitly present in the current scene/story or stated by their owner. The database validates quantities and will report rejected operations.','Only record completed actions, never plans, hypotheticals, intentions, or mere mentions. If an inventory changed, append one hidden comment: <!-- INVENTORY_ACTIONS {"actions":[...]} --> with valid JSON. No action block if no inventory change.','Actions: add {type:"add",item,quantity,owner,storage,description}; remove {type:"remove",item,quantity,owner,storage}; consume {type:"consume",item,quantity,owner,storage}; transfer {type:"transfer",item,quantity,owner,storage,toOwner}; move {type:"move",item,quantity,owner,storage,toStorage}; create_storage {type:"create_storage",name,storageType,owner,description,alias}. add can reference storage alias. move can reference toStorage alias. When creating a storage and adding items in the same block, create_storage first with alias (e.g. "ring1"), then add actions with storage:"ring1". Aliases are temporary IDs for this message only.','Owner and storage fields use exact IDs listed below. Empty string means unassigned owner or carried/no container. Item names are case-insensitive. Maximum 20 operations. Do not infer unknown quantities; omit quantity to request all available only when the story clearly establishes that all of the item is being moved/removed.'];
-      for(const e of s.entities)lines.push(`Owner/entity ${e.name} (ID=${e.entityId}, kind=${e.kind}). Private inventory: not included; do not disclose or infer contents.`);
-      for(const st of s.storages)lines.push(`Storage ${st.name} (ID=${st.storageId}, type=${st.type}, owner=${st.ownerId||'unassigned'}).`);lines.push('For a newly created container within the same action block, use create_storage with a unique alias string, then reference that alias in later add actions as storage, or in move actions as toStorage.');
-      const note={is_user:false,name:'Inventory System',mes:lines.join('\n'),send_date:Date.now(),extra:{inventory_system:true,inventory_private:true}};const lastUser=chat.findLastIndex?chat.findLastIndex(m=>m.is_user||m.role==='user'):-1;chat.splice(lastUser>=0?lastUser:chat.length,0,note);return chat;}catch(e){console.warn('[Inventory System] Prompt injection error',e);return chat;}}
+  async function inventorySystemPromptInterceptor(chat,contextSize,abort,type){
+    try{
+      const key=chatKey();if(!key)return chat;
+      const s=await getState(key);
+      const lines=[
+        '[INVENTORY SYSTEM — ACTION PROTOCOL]',
+        'Privacy: every entity has a separate private inventory. Do not reveal or use another entity’s private inventory unless story events explicitly establish that knowledge. Inventory lists are not supplied to the model.',
+        'Register entities automatically: when a named NPC or newly introduced character appears in the active scene/dialogue (not merely background lore), include a create_entity action on first appearance. Never create duplicates; use existing names/IDs. {{user}} and the current main character are already registered. Entity registration can be the only action block even if no item changes. When a completed scene action changes inventory state, append exactly one machine-readable block at the VERY END of your reply. Preferred format: <!-- INVENTORY_ACTIONS {"actions":[...]} -->. If HTML comments are unsupported by the model, use a plain final line INVENTORY_ACTIONS: {"actions":[...]}. Do not put it in a code fence. No block for plans, hypothetical actions, or mentions that do not change state.',
+        'Keep normal roleplay prose unchanged; the hidden block is metadata only. Use action types: create_entity, add, remove, consume, transfer, move, create_storage.',
+        'Schemas: create_entity {type:"create_entity",name,kind (npc|char),alias}; add {type:"add",item,quantity,owner,storage,description}; remove/consume {type:"remove"|"consume",item,quantity,owner,storage}; transfer {type:"transfer",item,quantity,owner,storage,toOwner}; move {type:"move",item,quantity,owner,storage,toStorage}; create_storage {type:"create_storage",name,storageType,owner,description,alias}.',
+        'For a container created in the SAME block, create_storage first with a short unique alias (e.g. "newbox"), then use storage:"newbox" in later add actions. Do not use a display name in place of IDs or aliases.',
+        'Use exact owner IDs or entity aliases created earlier in this same block. Empty string means unassigned owner or carried/no container. Use entity alias (e.g. npc1) as owner for subsequent operations. Maximum 20 actions. Quantities must be positive integers. Only report changes that actually happened in the scene. Example of the structure only: <!-- INVENTORY_ACTIONS {"actions":[{"type":"create_storage","name":"Small pouch","storageType":"container","owner":"entity_user_id","alias":"pouch1"},{"type":"add","item":"Notebook","quantity":1,"owner":"entity_user_id","storage":"pouch1"}]} -->'
+      ];
+      for(const e of s.entities)lines.push(`Entity ${e.name} (ID=${e.entityId}, kind=${e.kind}). Do not expose inventory contents. Do not create duplicate entities for this name.`);
+      for(const st of s.storages)lines.push(`Storage ${st.name} (ID=${st.storageId}, type=${st.type}, owner=${st.ownerId||'unassigned'}).`);
+      const note={is_user:false,name:'Inventory System',mes:lines.join('\n'),send_date:Date.now(),extra:{inventory_system:true,inventory_private:true,inventory_prompt_injected:true}};
+      // SillyTavern's generate_interceptor mutates the supplied prompt array; returning
+      // a cloned array is not a reliable injection mechanism. Insert directly and
+      // remove this tagged note after the generation lifecycle completes.
+      if(!Array.isArray(chat))throw new Error('Interceptor received no chat array');
+      const lastUser=chat.findLastIndex?chat.findLastIndex(m=>m.is_user||m.role==='user'):-1;
+      chat.splice(lastUser>=0?lastUser:chat.length,0,note);
+      diagnostic('prompt-injected','Inventory protocol inserted into generation prompt.');
+      const statusEl=panel?.querySelector('#inv-status');if(statusEl)statusEl.textContent='Prompt protocol injected; awaiting AI reply.';
+    }catch(e){diagnostic('interceptor','Injection failed: '+e.message);console.warn('[Inventory System] Prompt injection error',e);return chat;}
+  }
   globalThis.inventorySystemPromptInterceptor=inventorySystemPromptInterceptor;
-  async function messageReceived(eventMessage){try{const key=chatKey();if(!key)return;const c=context(),chat=c.chat||[];let candidates=[];const supplied=eventMessage&&typeof eventMessage==='object'?(eventMessage.message||eventMessage.mes||eventMessage):null;if(supplied&&typeof supplied==='object'&&!supplied.is_user&&supplied.role!=='user')candidates.push(supplied);for(let i=chat.length-1;i>=Math.max(0,chat.length-8);i--){const m=chat[i];if(m&&!m.is_user&&m.role!=='user'&&(m.mes||m.message||m.content)&&!candidates.includes(m))candidates.push(m);}
-    let chosen=null;for(const m of candidates){const txt=m.mes||m.message||m.content||'';if(String(txt).includes('INVENTORY_ACTIONS')){chosen=m;break;}}if(!chosen){const statusEl=panel?.querySelector('#inv-status');if(statusEl)statusEl.textContent='No AI inventory action block detected in recent messages.';return;}
-    const text=chosen.mes||chosen.message||chosen.content||'',msgKey=String(chosen.mesId||chosen.id||chosen.send_date||`${chat.indexOf(chosen)}_${text.slice(0,100)}`);const res=await processMessage(key,msgKey,text);const statusEl=panel?.querySelector('#inv-status');if(res.status==='applied'){const successes=res.results.filter(x=>x.status==='success').length,failures=res.results.filter(x=>x.status==='error').length;const summary=`AI: ${successes} verified operation(s)${failures?`, ${failures} failed`:''}`;if(statusEl)statusEl.textContent=summary;await refresh();toastr.success(summary,'Inventory System');}
-    else if(res.status==='partial_or_failed'){if(statusEl)statusEl.textContent=`AI operation failed: ${res.message}`;await refresh();toastr.error(`Inventory operation failed: ${res.message}`,'Inventory System');}
-    else if(res.status==='error'){if(statusEl)statusEl.textContent=`AI action block rejected: ${res.message}`;await refresh();toastr.warning(`No inventory changes: ${res.message}`,'Inventory System');}
-    else if(res.status==='disabled'){if(statusEl)statusEl.textContent='AI inventory actions are disabled. No changes were applied.';await refresh();toastr.info('AI inventory updates are disabled.');}
-    else if(res.status==='duplicate'){if(statusEl)statusEl.textContent='Duplicate AI action block ignored.';}
-    else if(res.status==='none'){if(statusEl)statusEl.textContent='No inventory action block in assistant message.';await refresh();}
-  }catch(e){panel?.querySelector('#inv-status')&&(panel.querySelector('#inv-status').textContent=`AI action error: ${e.message}`);toastr.warning(`No inventory update: ${e.message}`,'Inventory System');console.warn(e);}}
-  function init(){buildPanel();const c=context();c.eventSource.on(c.event_types.APP_READY,buildPanel);c.eventSource.on(c.event_types.APP_READY,refresh);c.eventSource.on(c.event_types.CHAT_CHANGED,refresh);c.eventSource.on(c.event_types.MESSAGE_RECEIVED,(...args)=>messageReceived(args[0]));}init();
+  function cleanupPromptNotes(){
+    const chat=context().chat;
+    if(!Array.isArray(chat))return 0;
+    let removed=0;
+    for(let i=chat.length-1;i>=0;i--){if(chat[i]?.extra?.inventory_prompt_injected){chat.splice(i,1);removed++;}}
+    if(removed)diagnostic('cleanup',`Removed ${removed} temporary inventory prompt note(s) from chat history.`);
+    return removed;
+  }
+  async function messageReceived(eventMessage){
+    try{
+      const key=chatKey();if(!key)return;
+      const c=context(),chat=c.chat||[];
+      cleanupPromptNotes();
+      diagnostic('response','MESSAGE_RECEIVED received; waiting briefly for chat message commit.');
+      let chosen=null,text='';
+      // Some ST builds emit MESSAGE_RECEIVED before the final assistant message is appended.
+      for(let attempt=0;attempt<7&&!chosen;attempt++){
+        const candidates=[];
+        const supplied=eventMessage&&typeof eventMessage==='object'?(eventMessage.message||eventMessage.mes||eventMessage):null;
+        if(supplied&&typeof supplied==='object'&&!supplied.is_user&&supplied.role!=='user')candidates.push(supplied);
+        for(let i=chat.length-1;i>=Math.max(0,chat.length-4);i--){const m=chat[i];if(m&&!m.is_user&&m.role!=='user'&&(m.mes||m.message||m.content)&&!candidates.includes(m))candidates.push(m);}
+        for(const m of candidates){const t=m.mes||m.message||m.content||'';if(String(t).includes('INVENTORY_ACTIONS')){chosen=m;text=String(t);break;}}
+        if(!chosen&&attempt<6)await new Promise(resolve=>setTimeout(resolve,250));
+      }
+      if(!chosen){diagnostic('parser','Assistant reply received; no INVENTORY_ACTIONS block found after retry window.');await log(key,'ai_action_none',{status:'none',message:'No action block detected after retrying MESSAGE_RECEIVED',messageKey:String(Date.now())});return;}
+      const msgKey=String(chosen.mesId||chosen.id||chosen.send_date||`${chat.indexOf(chosen)}_${text.slice(0,100)}`);
+      diagnostic('parser','Action block found; parsing JSON.');
+      const res=await processMessage(key,msgKey,text);const statusEl=panel?.querySelector('#inv-status');
+      if(res.status==='applied'){const successes=res.results.filter(x=>x.status==='success').length,failures=res.results.filter(x=>x.status==='error').length;const summary=`AI: ${successes} verified operation(s)${failures?`, ${failures} failed`:''}`;diagnostic('database',summary);if(statusEl)statusEl.textContent=summary;await refresh();toastr.success(summary,'Inventory System');}
+      else if(res.status==='partial_or_failed'){diagnostic('database','Partial failure: '+res.message);if(statusEl)statusEl.textContent=`AI operation failed: ${res.message}`;await refresh();toastr.error(`Inventory operation failed: ${res.message}`,'Inventory System');}
+      else if(res.status==='error'){diagnostic('parser','Action block rejected: '+res.message);if(statusEl)statusEl.textContent=`AI action block rejected: ${res.message}`;await refresh();toastr.warning(`No inventory changes: ${res.message}`,'Inventory System');}
+      else if(res.status==='disabled'){diagnostic('database','Auto-apply disabled; parsed actions not applied.');if(statusEl)statusEl.textContent='AI inventory actions are disabled. No changes were applied.';await refresh();toastr.info('AI inventory updates are disabled.');}
+      else if(res.status==='duplicate'){diagnostic('database','Duplicate block ignored.');if(statusEl)statusEl.textContent='Duplicate AI action block ignored.';}
+      else if(res.status==='none'){diagnostic('parser','No action block returned.');if(statusEl)statusEl.textContent='No AI action block in assistant message.';await refresh();}
+    }catch(e){diagnostic('database','Handler exception: '+e.message);panel?.querySelector('#inv-status')&&(panel.querySelector('#inv-status').textContent=`AI action error: ${e.message}`);toastr.warning(`No inventory update: ${e.message}`,'Inventory System');console.warn(e);}
+  }
+  function init(){buildPanel();const c=context();c.eventSource.on(c.event_types.APP_READY,buildPanel);c.eventSource.on(c.event_types.APP_READY,refresh);c.eventSource.on(c.event_types.CHAT_CHANGED,refresh);c.eventSource.on(c.event_types.MESSAGE_RECEIVED,(...args)=>messageReceived(args[0]));if(c.event_types.GENERATION_ENDED)c.eventSource.on(c.event_types.GENERATION_ENDED,cleanupPromptNotes);if(c.event_types.GENERATION_STOPPED)c.eventSource.on(c.event_types.GENERATION_STOPPED,cleanupPromptNotes);}init();
 })();

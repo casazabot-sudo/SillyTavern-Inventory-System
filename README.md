@@ -1,8 +1,14 @@
 # Inventory System for SillyTavern
 
-**Version:** 0.2.2 (experimental)  
+**Version:** 0.2.4 (experimental)  
 **Storage:** Browser IndexedDB, separate per chat  
 **Server plugin:** Not required
+
+## What's new in v0.2.4
+- Prompt injection is ephemeral and placed before the latest user prompt; it no longer mutates the stored chat array.
+- Parser accepts hidden HTML comments and a plain-text `INVENTORY_ACTIONS:` fallback with nested JSON.
+- Added a diagnostics panel for interceptor, response, parser and database stages.
+- Retries message detection briefly to handle SillyTavern event timing races.
 
 ## What's new in v0.2.2
 - Improved AI action-block detection by scanning recent assistant messages, covering message event timing/payload inconsistencies.
@@ -20,16 +26,18 @@
 - Uses the corrected repository URL: https://github.com/casazabot-sudo/SillyTavern-Inventory-System
 
 ## Install/update
-Update the extension through SillyTavern's extension manager or pull the repository files, then reload ST. The IndexedDB database name is unchanged; the existing records should remain. The v0.2.1 release has not yet been runtime-tested in your SillyTavern installation.
+Update the extension through SillyTavern's extension manager or pull the repository files, then reload ST. The IndexedDB database name is unchanged; the existing records should remain. The generation interceptor was corrected to modify the supplied prompt chat array directly (rather than returning an ignored clone). Temporary tagged prompt notes are removed on response/end/stop events. This build still needs an in-app test; syntax checks do not prove the event integration works.
 
 ## AI action comment format
-When a completed inventory change occurs, the assistant appends a hidden comment:
+When a completed inventory change occurs, the assistant should append a hidden comment. If comment syntax is not emitted, the plain-text marker is accepted:
 
 ```html
-<!-- INVENTORY_ACTIONS {"actions":[{"type":"add","item":"Example item","quantity":1,"owner":"user","storage":"","description":""}]} -->
+<!-- INVENTORY_ACTIONS {"actions":[{"type":"add","item":"Notebook","quantity":1,"owner":"user","storage":"","description":""}]} -->
+
+Fallback line: `INVENTORY_ACTIONS: {"actions":[{"type":"add","item":"Notebook","quantity":1,"owner":"user","storage":"","description":""}]}`
 ```
 
-Actions: `add`, `remove`, `consume`, `transfer`, `move`, `create_storage`. Owner and storage fields use IDs supplied by the extension; an empty storage string means carried/no container. Up to 20 actions per block. For container creation plus filling in one message, create the container first with a temporary `alias`, then refer to that alias as the `storage` field of later `add` actions or `toStorage` in `move` actions. Example: `<!-- INVENTORY_ACTIONS {"actions":[{"type":"create_storage","name":"Ring","storageType":"spatial_ring","owner":"user","alias":"ring_new"},{"type":"add","item":"Example item","quantity":2,"owner":"user","storage":"ring_new"}]} -->`. The alias is only valid within that action block; the extension replaces it with the new storage ID after creation and verifies the stored contents.
+Actions: `add`, `remove`, `consume`, `transfer`, `move`, `create_storage`. Owner and storage fields use IDs supplied by the extension; an empty storage string means carried/no container. Up to 20 actions per block. For container creation plus filling in one message, create the container first with a temporary `alias`, then refer to that alias as the `storage` field of later `add` actions or `toStorage` in `move` actions. Example: create a named container with a temporary alias, then reference that alias in later operations in the same block. The alias is only valid within that action block; the extension replaces it with the new storage ID after creation and verifies the stored contents.
 
 ## Privacy design
 The prompt contains entity names/IDs and storage metadata, but **does not include item lists or item descriptions**. All inventory contents are treated as private. Story characters should only know inventory contents that they have personally observed, been told about, or received through an explicit in-story event. The extension itself stores the inventory state for bookkeeping and validation.
@@ -51,3 +59,10 @@ Action batches are preflighted before writes, but operations still use sequentia
 
 ## License
 AGPL-3.0
+
+
+### v0.2.4 — Automatic entity registration
+- Automatically register new NPCs/characters when they appear in an active scene, using AI `create_entity` actions.
+- Entity aliases allow actions in the same response to assign items to newly registered owners.
+- Existing User and Character entries remain auto-created at chat initialization.
+- Manual entity creation remains available as a fallback.

@@ -22,3 +22,4 @@
 .inv-nested-items{margin:6px 0 0 12px;padding-left:12px;border-left:2px solid var(--SmartThemeBorderColor);list-style:circle}
 .inv-empty{opacity:.65;font-style:italic}
 .inv-event.is-skipped{opacity:.7}
+.inv-diagnostic{margin:8px 0;padding:8px;border:1px solid var(--SmartThemeBorderColor,#555);border-radius:6px;font-size:0.9em}.inv-diagnostic summary{cursor:pointer;font-weight:600}.inv-diagnostic #inv-diagnostics{padding:6px 2px;word-break:break-word;color:var(--SmartThemeBodyColor,#ddd)}.inv-diagnostic #inv-diagnostics[data-stage="parser"]{color:#e4b75a}.inv-diagnostic #inv-diagnostics[data-stage="database"]{color:#8fd18f}
