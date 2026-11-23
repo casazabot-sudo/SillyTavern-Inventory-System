@@ -13,3 +13,8 @@
 #inventory-system-panel .inv-move{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
 #inventory-system-panel .inv-move select{max-width:150px}
 #inventory-system-panel .inv-status{font-size:.85em;opacity:.8;margin:4px 0}
+
+#inventory-system-panel .inv-status{padding:6px 8px;border-left:3px solid var(--SmartThemeBorderColor);border-radius:3px;overflow-wrap:anywhere}
+#inventory-system-panel .inv-event.is-success{border-left:3px solid #3b9b62;padding-left:7px}
+#inventory-system-panel .inv-event.is-error{border-left:3px solid #c44;padding-left:7px}
+#inventory-system-panel .inv-event small{overflow-wrap:anywhere}
