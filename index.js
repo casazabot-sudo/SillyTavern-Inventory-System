@@ -128,28 +128,25 @@
     panel.querySelectorAll('.inv-delete').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this item?'))return;await deleteRow(currentKey,b.dataset.type,b.dataset.id);await refresh();});
   }
   async function refresh(){if(!panel)buildPanel();currentKey=chatKey();if(!currentKey){panel.querySelector('#inv-chat').textContent='Open a chat to begin';return;}panel.querySelector('#inv-chat').textContent=`Separate local database · ${currentKey}`;try{currentState=await getState(currentKey);render();}catch(e){panel.querySelector('#inv-content').textContent=e.message;}}
-  async function inventorySystemPromptInterceptor(chat,contextSize,abort,type){
+  function inventorySystemPromptInterceptor(chat,contextSize,abort,type){
+    // Keep generation interception synchronous and dependency-free: no IndexedDB,
+    // migrations, or async waits are allowed on the provider request path.
     try{
-      const key=chatKey();if(!key)return chat;
-      const s=await getState(key);
+      if(!Array.isArray(chat))return chat;
       const lines=[
-        '[INVENTORY SYSTEM v0.3 — CHARACTER REGISTRY & SINGLE INVENTORY]',
+        '[INVENTORY SYSTEM v0.3.1 — CHARACTER REGISTRY & SINGLE INVENTORY]',
         'Each character has ONE inventory list. No bags, chests, rings, pockets, storage IDs, or containers are tracked. Every inventory is private; do not disclose or use another character’s inventory unless established by scene events.',
-        'Character registry: {{user}} and the main character are already registered. Whenever a distinct NPC/character first appears in the active scene or directly participates, include create_entity with name, kind:"npc", and a stable alias. Do not register background mentions, duplicates, or hypothetical characters. Use existing entity IDs or aliases for item owners.',
-        'When a completed scene event changes inventory, append one machine-readable block at the very end: <!-- INVENTORY_ACTIONS {"actions":[...]} -->. Plain-line fallback: INVENTORY_ACTIONS: {"actions":[...]}. No code fence. Entity registration alone can be a block. No block for plans/hypotheticals.',
-        'Allowed actions: create_entity {type:"create_entity",name,kind,alias}; add {type:"add",item,quantity,owner,description}; remove/consume {type:"remove"|"consume",item,quantity,owner,storage:""}; transfer {type:"transfer",item,quantity,owner,storage:"",toOwner}. storage must be empty string for item actions. Quantities positive integers. Max 20 actions. Only report completed changes.',
-        'Never provide inventory lists to characters. Inventory contents are private and are not included in prompt. Do not create duplicate entities; use exact registered owner IDs or aliases. Example block: <!-- INVENTORY_ACTIONS {\"actions\":[{\"type\":\"create_entity\",\"name\":\"Elara\",\"kind\":\"npc\",\"alias\":\"elara\"},{\"type\":\"add\",\"item\":\"Notebook\",\"quantity\":1,\"owner\":\"elara\"}]} -->'
+        'When a distinct NPC/character first appears in the active scene or directly participates, include create_entity with name, kind:"npc", and a stable alias. Do not register background mentions, duplicates, or hypothetical characters. For completed inventory changes, use the actions below.',
+        'At the very end of the reply append a machine-readable block only when completed scene events change the registry or inventory: <!-- INVENTORY_ACTIONS {"actions":[...]} -->. No code fence. Entity registration alone is valid. No block for plans/hypotheticals.',
+        'Allowed actions: create_entity {type:"create_entity",name,kind,alias}; add {type:"add",item,quantity,owner,description}; remove/consume {type:"remove"|"consume",item,quantity,owner}; transfer {type:"transfer",item,quantity,owner,toOwner}. Quantities positive integers. Max 20 actions. Only report completed changes.',
+        'Never provide inventory lists to characters. Inventory contents are private and are not included in prompt. Do not create duplicate entities; use aliases in this action block. Example block: <!-- INVENTORY_ACTIONS {\"actions\":[{\"type\":\"create_entity\",\"name\":\"Elara\",\"kind\":\"npc\",\"alias\":\"elara\"},{\"type\":\"add\",\"item\":\"Notebook\",\"quantity\":1,\"owner\":\"elara\"}]} -->'
       ];
-      for(const e of s.entities)lines.push(`Entity ${e.name} (ID=${e.entityId}, kind=${e.kind}). Do not expose inventory contents. Do not create duplicate entities for this name.`);
       const note={is_user:false,name:'Inventory System',mes:lines.join('\n'),send_date:Date.now(),extra:{inventory_system:true,inventory_private:true,inventory_prompt_injected:true}};
-      // SillyTavern's generate_interceptor mutates the supplied prompt array; returning
-      // a cloned array is not a reliable injection mechanism. Insert directly and
-      // remove this tagged note after the generation lifecycle completes.
-      if(!Array.isArray(chat))throw new Error('Interceptor received no chat array');
-      const lastUser=chat.findLastIndex?chat.findLastIndex(m=>m.is_user||m.role==='user'):-1;
+      const lastUser=chat.findLastIndex?chat.findLastIndex(m=>m?.is_user||m?.role==='user'):-1;
       chat.splice(lastUser>=0?lastUser:chat.length,0,note);
-      diagnostic('prompt-injected','Inventory protocol inserted into generation prompt.');
-      const statusEl=panel?.querySelector('#inv-status');if(statusEl)statusEl.textContent='Prompt protocol injected; awaiting AI reply.';
+      diagnostic('prompt-injected','Synchronous inventory protocol inserted; no DB work performed in interceptor.');
+      const statusEl=panel?.querySelector('#inv-status');if(statusEl)statusEl.textContent='Inventory protocol injected; awaiting AI reply.';
+      return chat;
     }catch(e){diagnostic('interceptor','Injection failed: '+e.message);console.warn('[Inventory System] Prompt injection error',e);return chat;}
   }
   globalThis.inventorySystemPromptInterceptor=inventorySystemPromptInterceptor;

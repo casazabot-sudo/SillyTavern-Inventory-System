@@ -2,6 +2,13 @@
 
 A chat-local fantasy roleplay inventory extension for SillyTavern.
 
+## v0.3.1
+
+### Stability hotfix
+- Generation interceptor now returns the prompt/chat array on every path.
+- Prompt injection is synchronous and does not wait for IndexedDB.
+- No inventory contents are exposed to the model.
+
 ## v0.3.0
 
 ### Design

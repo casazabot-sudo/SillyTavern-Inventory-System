@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+- Fixes generation-interceptor return contract: always returns the mutated chat array.
+- Makes prompt injection synchronous and removes IndexedDB reads/migrations from the generation-interceptor path.
+- Uses static inventory instructions only; inventory contents remain private and are not sent to prompts.
+- Keeps prompt-note cleanup on generation-ended/stopped events.
+
 ## 0.3.0
 - Replaced separate containers/storage UI with a single inventory per character.
 - Automatically initializes `{{user}}` and the current main character when a chat is opened.
