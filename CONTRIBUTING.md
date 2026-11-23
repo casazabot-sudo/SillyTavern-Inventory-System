@@ -1,3 +1,1 @@
-# Contributing
-
-Report issues with SillyTavern version, browser, reproduction steps, and console errors (remove private information). Do not attach full chat exports unless you've sanitized and intentionally reviewed them.
+Contributions should preserve chat-local database isolation, private per-character inventories, and validation of AI action blocks. Keep changes generic for fantasy roleplay; avoid sending private inventory contents into generation prompts.
