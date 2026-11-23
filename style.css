@@ -1,15 +1,15 @@
 #inventory-system-panel .inline-drawer-content{display:none;padding:8px}
 #inventory-system-panel .inline-drawer-content.open{display:block}
-#inventory-system-panel .is-toolbar,#inventory-system-panel .is-grid{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
-#inventory-system-panel .is-grid input,#inventory-system-panel .is-grid select{flex:1;min-width:110px}
-#inventory-system-panel .is-form{margin:8px 0;border:1px solid var(--SmartThemeBorderColor);border-radius:5px;padding:6px}
-#inventory-system-panel .is-form summary{cursor:pointer;font-weight:600}
-#inventory-system-panel .is-muted,#inventory-system-panel .is-footnote{opacity:.7;font-size:.82em;overflow-wrap:anywhere}
-#inventory-system-panel .is-section{margin:10px 0}
-#inventory-system-panel .is-section h4{margin:4px 0}
-#inventory-system-panel ul{list-style:none;margin:4px 0;padding:0}
-#inventory-system-panel li{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;padding:6px 2px;border-bottom:1px solid var(--SmartThemeBorderColor)}
-#inventory-system-panel li>span{display:flex;flex-direction:column;gap:2px;min-width:0}
-#inventory-system-panel .is-move{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
-#inventory-system-panel .is-move select{max-width:170px}
-#inventory-system-panel .is-footnote{margin-top:8px}
+#inventory-system-panel .inv-toolbar,#inventory-system-panel .inv-grid{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+#inventory-system-panel .inv-grid input,#inventory-system-panel .inv-grid select{flex:1;min-width:100px}
+#inventory-system-panel .inv-form{margin:8px 0;border:1px solid var(--SmartThemeBorderColor);border-radius:5px;padding:6px}
+#inventory-system-panel .inv-form summary{cursor:pointer;font-weight:600}
+#inventory-system-panel .inv-small,#inventory-system-panel small,#inventory-system-panel .inv-note{opacity:.72;font-size:.82em;overflow-wrap:anywhere}
+#inventory-system-panel .inv-auto{display:flex;align-items:center;gap:5px;font-size:.84em}
+#inventory-system-panel .inv-section{margin:10px 0}
+#inventory-system-panel .inv-section ul{list-style:none;margin:4px 0;padding:0}
+#inventory-system-panel .inv-section li{display:flex;justify-content:space-between;gap:6px;padding:6px 2px;border-bottom:1px solid var(--SmartThemeBorderColor)}
+#inventory-system-panel .inv-section li>span{display:flex;flex-direction:column;gap:2px;min-width:0}
+#inventory-system-panel .inv-move{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
+#inventory-system-panel .inv-move select{max-width:150px}
+#inventory-system-panel .inv-status{font-size:.85em;opacity:.8;margin:4px 0}

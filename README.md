@@ -1,60 +1,61 @@
 # Inventory System for SillyTavern
 
-**Version:** 0.1.0 (prototype)  
-**Storage:** Browser IndexedDB, separate chat key  
+**Version:** 0.2.0 (experimental)  
+**Storage:** Browser IndexedDB, separate per chat  
 **Server plugin:** Not required
 
-Inventory System is a client-side SillyTavern UI extension prototype. It keeps inventory data outside chat messages and Lorebooks, in a browser IndexedDB database.
+## What's new in v0.2
+- Reads a hidden `INVENTORY_ACTIONS` comment from assistant responses.
+- Supports `add`, `remove`, `consume`, `transfer`, `move`, and `create_storage` action types.
+- Validates entity/storage references and quantity availability before applying the action batch.
+- Stores processed message keys to reduce duplicate processing.
+- Toggle for AI auto-apply (on by default).
+- Preserves v0.1 IndexedDB records; schema upgrade adds processed-message tracking.
 
-## Features in v0.1.0
+## Install/update
+GitHub repository: https://github.com/casazabot-sudo/InventorySystem
+Update through SillyTavern's extension manager or pull/update the repository, then refresh ST. Existing IndexedDB data is retained.
 
-- Separate inventory data keyed to the active chat.
-- Initializes `{{user}}` and the current character entity on a chat.
-- Create NPCs and other entities.
-- Create bags, backpacks, containers, spatial rings and spatial pockets.
-- Add items with quantity, description, owner and storage.
-- Move items between owners/containers manually.
-- Delete entries.
-- Event log (recent 100 events).
-- Export/import JSON backup.
-- Inject current registered inventory state into the generation prompt.
-- No server plugin, SQLite, Node packages or config.yaml changes.
+## AI action block format
+When an inventory change has actually occurred in the story, the assistant should append one hidden HTML comment containing JSON. Example:
 
-## Install from GitHub in SillyTavern
+```html
+<!-- INVENTORY_ACTIONS {"actions":[{"type":"add","item":"Example item","quantity":1,"owner":"user","storage":"","description":""}]} -->
+```
 
-1. Install Git if your SillyTavern setup does not already have it.
-2. Open SillyTavern → **Extensions** → **Install Extension**.
-3. Paste this repository URL (replace with the actual repository after publishing):
-   `https://github.com/casazabot-sudo/InventorySystem`
-4. Choose the installation target and install.
-5. Refresh/restart SillyTavern if prompted, then enable Inventory System in Extensions.
+Supported actions:
+- `add`: create item record. Fields: `item`, `quantity`, optional `owner`, `storage`, `description`.
+- `remove`: remove item quantity. Fields: `item`, `quantity`, optional `owner`, `storage`.
+- `consume`: decrement/remove quantity. Same selectors as `remove`.
+- `transfer`: change item owner. Fields: `item`, `quantity`, optional `owner`, `storage`, required `toOwner`.
+- `move`: change storage location. Fields: `item`, `quantity`, optional `owner`, `storage`, required `toStorage` (empty string = carried).
+- `create_storage`: create a storage. Fields: `name`, optional `storageType`, `owner`, `description`.
 
-## Use
+Owner and storage references must match IDs provided in the prompt. Up to 20 actions are accepted in one block. Only completed story actions should be emitted; mentions, plans, and hypotheticals should not modify inventory.
 
-1. Open a chat. The database initializes and creates `{{user}}` plus the current character.
-2. Expand the Inventory System panel in Extensions.
-3. Add NPCs/entities, containers, and items.
-4. Use item Move selectors to change owner or storage.
-5. Export backups regularly. Data is stored in this browser's IndexedDB and does not automatically sync between browsers or devices.
+## Safety and data reliability
+AI auto-apply is experimental. Disable the toggle for manual-only mode. Disabled actions are skipped (no review queue in this release). Keep JSON backups. Action blocks can be malformed or model-inaccurate. Validation preflights the batch, but database writes are sequential rather than a single atomic transaction; a failure during writes can cause a partial batch. Review the activity list after testing.
 
-## Backup and restore
+## Known limitations
+- Prompt protocol reliability varies by model and prompt style.
+- Swipes/edits are not reconciled automatically yet.
+- No confirmation/review queue or rollback button.
+- No item stack merging, weight/capacity, nested containers, equipment slots, or advanced filtering.
+- Data is browser-local IndexedDB and does not sync across devices.
+- Chat key is based on the current ST context chat filename and character name; test chat isolation in your environment.
+- Current prompt interceptor injects an ephemeral context message. Test compatibility with your preset/model.
 
-- **Export backup** downloads a JSON snapshot for the active chat.
-- **Import backup** merges the records from a JSON snapshot into the currently open chat database.
-
-## Limitations / known prototype issues
-
-- AI prose does not automatically modify the database yet. Prompt injection supplies the current state and instructs the model not to assume unregistered items, but persistence currently requires UI actions.
-- The UI and data schema are prototype quality and require testing against the current SillyTavern release.
-- Browser storage may be cleared by browser cleanup or profile removal. Keep exported backups.
-- The active-chat identifier depends on SillyTavern context fields. Verify that chat switching isolates data in your environment before relying on it.
-- The prompt interceptor appends a system-style message to the prompt chat array; verify behavior with the prompt format/backend you use.
-- No capacity/weight, equipment slots, nested containers, undo, transaction validation, or automatic item extraction yet.
-
-## Privacy
-
-Inventory records are stored locally in the browser profile's IndexedDB. The extension does not send inventory data to a third-party service.
+## Backups
+Use the panel's Backup button to export JSON for the current chat. Restore merges records into the current chat; export a fresh backup before restore if you need a rollback point.
 
 ## License
+AGPL-3.0.
 
-GNU Affero General Public License v3.0 (AGPL-3.0). See `LICENSE`.
+## Suggested smoke test after update
+1. Update extension and reload SillyTavern.
+2. Open two different chats and add a harmless test item in only one. Confirm chat isolation.
+3. In one chat, add a test entity and storage, then register a few test items.
+4. Enable auto-apply, ask the model to narrate a simple explicit acquisition/transfer/storage change using those registered names.
+5. Check the activity list and quantities, then regenerate/swipe and confirm duplicate events do not repeatedly apply the same block.
+6. Disable auto-apply and confirm AI action blocks are skipped; manual UI operations should still work.
+7. Export backup, then restore into a test chat and confirm records appear there. Note: import merges records; do not restore over valuable data without a backup.

@@ -1,9 +1,3 @@
 # Contributing
 
-For v0.1, please report:
-- SillyTavern version and browser.
-- Extension install target (user/global).
-- Steps to reproduce.
-- Console errors, with personal data removed.
-
-Do not attach chat exports containing private roleplay or personal information unless you have reviewed and intentionally sanitized them.
+Report issues with SillyTavern version, browser, reproduction steps, and console errors (remove private information). Do not attach full chat exports unless you've sanitized and intentionally reviewed them.

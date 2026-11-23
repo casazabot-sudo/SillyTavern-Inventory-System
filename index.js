@@ -1,256 +1,68 @@
-/* Inventory System v0.1.0 — client-only, per-chat IndexedDB */
+/* Inventory System v0.2.0 - per-chat IndexedDB and AI action blocks */
 (() => {
-    'use strict';
-
-    const EXT = 'inventory-system';
-    const DB_NAME = 'SillyTavern_InventorySystem';
-    const DB_VERSION = 1;
-    const PANEL_ID = 'inventory-system-panel';
-    const context = () => SillyTavern.getContext();
-    let panel, activeChatKey = null, cachedState = null, dbPromise;
-
-    function getChatKey() {
-        const ctx = context();
-        const file = ctx.chat?.file_name || ctx.chatId || ctx.chat?.name || ctx.chat?.id;
-        const charName = ctx.name2 || ctx.character?.name || ctx.characters?.[ctx.characterId]?.name || 'character';
-        // Avoid using a shared "empty chat" key. Chat identity may differ across ST versions.
-        return file ? `${String(charName).trim()}::${String(file).trim()}` : null;
+  'use strict';
+  const EXT='inventory-system', DB_NAME='SillyTavern_InventorySystem', DB_VERSION=2, PANEL='inventory-system-panel';
+  const context=()=>SillyTavern.getContext();
+  let panel, currentKey=null, currentState=null, dbPromise;
+  const uid=p=>`${p}_${crypto.randomUUID?crypto.randomUUID():Date.now()+'_'+Math.random().toString(36).slice(2)}`;
+  const escapeHtml=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  function chatKey(){const c=context();const file=c.chat?.file_name||c.chatId||c.chat?.name||c.chat?.id;const char=c.name2||c.character?.name||'character';return file?`${char}::${file}`:null;}
+  function openDb(){if(dbPromise)return dbPromise;dbPromise=new Promise((resolve,reject)=>{const r=indexedDB.open(DB_NAME,DB_VERSION);r.onupgradeneeded=()=>{const db=r.result;const defs={chats:'chatKey',entities:['chatKey','entityId'],storages:['chatKey','storageId'],items:['chatKey','itemId'],events:['chatKey','eventId'],processed:['chatKey','messageKey']};for(const [name,keyPath] of Object.entries(defs)){if(!db.objectStoreNames.contains(name)){const s=db.createObjectStore(name,{keyPath});if(name!=='chats')s.createIndex('byChat','chatKey',{unique:false});}}};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});return dbPromise;}
+  async function dbOp(store,mode,fn){const db=await openDb();return new Promise((resolve,reject)=>{const tx=db.transaction(store,mode),s=tx.objectStore(store);let result,requestValue;try{result=fn(s);if(result&&typeof result==='object'&&'onsuccess'in result){result.onsuccess=()=>requestValue=result.result;result.onerror=()=>reject(result.error);}}catch(e){reject(e);return;}tx.oncomplete=()=>resolve(requestValue!==undefined?requestValue:result);tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error||new Error('Transaction aborted'));});}
+  const getAll=(store,key)=>dbOp(store,'readonly',s=>s.index('byChat').getAll(key));
+  async function log(key,action,payload){await dbOp('events','readwrite',s=>s.put({chatKey:key,eventId:uid('event'),action,payload,timestamp:new Date().toISOString()}));}
+  async function ensureChat(key){const old=await dbOp('chats','readonly',s=>s.get(key));if(old)return old;const c=context(),charName=c.name2||c.character?.name||'Current Character';await dbOp('chats','readwrite',s=>s.put({chatKey:key,schemaVersion:2,createdAt:new Date().toISOString()}));for(const e of [{entityId:'user',name:'{{user}}',kind:'user'},{entityId:'char',name:charName,kind:'char'}])await dbOp('entities','readwrite',s=>s.put({chatKey:key,...e,createdAt:new Date().toISOString()}));await log(key,'chat_init',{});return true;}
+  async function getState(key){await ensureChat(key);const [entities,storages,items,events]=await Promise.all(['entities','storages','items','events'].map(n=>getAll(n,key)));events.sort((a,b)=>b.timestamp.localeCompare(a.timestamp));return {entities,storages,items,events:events.slice(0,100)};}
+  async function addEntity(key,name,kind,id){const row={chatKey:key,entityId:id||uid('entity'),name:name.trim(),kind:kind||'npc',createdAt:new Date().toISOString()};await dbOp('entities','readwrite',s=>s.put(row));await log(key,'entity_add',row);}
+  async function addStorage(key,name,type,owner,description){const row={chatKey:key,storageId:uid('storage'),name:name.trim(),type:type||'container',ownerId:owner||'',description:description||'',createdAt:new Date().toISOString()};await dbOp('storages','readwrite',s=>s.put(row));await log(key,'storage_add',row);}
+  async function addItem(key,name,qty,owner,storage,description){const row={chatKey:key,itemId:uid('item'),name:name.trim(),quantity:Math.max(1,Math.floor(Number(qty)||1)),ownerId:owner||'',storageId:storage||'',description:description||'',createdAt:new Date().toISOString()};await dbOp('items','readwrite',s=>s.put(row));await log(key,'item_add',row);}
+  async function deleteRow(key,type,id){const store=type==='entity'?'entities':type==='storage'?'storages':'items',field=type==='entity'?'entityId':type==='storage'?'storageId':'itemId';const old=await dbOp(store,'readonly',s=>s.get([key,id]));await dbOp(store,'readwrite',s=>s.delete([key,id]));if(type==='storage')for(const i of (await getAll('items',key)).filter(x=>x.storageId===id)){i.storageId='';await dbOp('items','readwrite',s=>s.put(i));}await log(key,`${type}_delete`,old||{[field]:id});}
+  async function moveItem(key,id,owner,storage){const i=await dbOp('items','readonly',s=>s.get([key,id]));if(!i)throw Error('Item not found');const before={ownerId:i.ownerId,storageId:i.storageId};i.ownerId=owner||'';i.storageId=storage||'';await dbOp('items','readwrite',s=>s.put(i));await log(key,'item_move',{itemId:id,from:before,to:{ownerId:i.ownerId,storageId:i.storageId}});}
+  async function exportBackup(key){const snap=await getState(key);const b=new Blob([JSON.stringify({chatKey:key,...snap},null,2)],{type:'application/json'}),url=URL.createObjectURL(b),a=document.createElement('a');a.href=url;a.download='inventory-backup.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+  async function importBackup(key,file){const d=JSON.parse(await file.text());if(!Array.isArray(d.entities)||!Array.isArray(d.items)||!Array.isArray(d.storages))throw Error('Invalid inventory backup');await ensureChat(key);for(const n of ['entities','storages','items','events'])for(const row of d[n]||[]){const v={...row,chatKey:key};if(n==='events'&&!v.eventId)v.eventId=uid('event');await dbOp(n,'readwrite',s=>s.put(v));}await log(key,'backup_import',{filename:file.name});}
+  function settings(){try{return JSON.parse(localStorage.getItem(EXT+'_settings')||'{}');}catch{return {};}}
+  function saveSettings(v){localStorage.setItem(EXT+'_settings',JSON.stringify(v));}
+  function extractActionBlock(text){const re=/<!--\s*INVENTORY_ACTIONS\s*([\s\S]*?)\s*-->/gi;let m,last;while((m=re.exec(text||''))!==null)last=m[1];if(!last)return null;return JSON.parse(last);}
+  function validate(key,block,state){if(!block||!Array.isArray(block.actions)||block.actions.length>20)throw Error('Action list invalid (maximum 20)');const eids=new Set(state.entities.map(e=>e.entityId)),sids=new Set(state.storages.map(s=>s.storageId));const allowed=['add','remove','consume','transfer','move','create_storage'];for(const [n,a] of block.actions.entries()){if(!allowed.includes(a.type))throw Error(`Action ${n+1}: unsupported type`);if(a.type==='add'&&!String(a.item||'').trim())throw Error(`Action ${n+1}: item name required`);if(a.type==='create_storage'&&!String(a.name||'').trim())throw Error(`Action ${n+1}: storage name required`);if(['remove','consume','transfer','move'].includes(a.type)&&!String(a.item||'').trim())throw Error(`Action ${n+1}: item name required`);if(a.quantity!==undefined&&(!Number.isInteger(Number(a.quantity))||Number(a.quantity)<1))throw Error(`Action ${n+1}: quantity must be a positive integer`);if(['remove','consume','transfer','move'].includes(a.type)&&(!Object.hasOwn(a,'owner')||!Object.hasOwn(a,'storage')))throw Error(`Action ${n+1}: source owner and storage fields must be explicit`);if(a.owner&&!eids.has(a.owner))throw Error(`Action ${n+1}: owner ID unknown`);if(a.toOwner&&!eids.has(a.toOwner))throw Error(`Action ${n+1}: recipient ID unknown`);if(a.storage&&!sids.has(a.storage))throw Error(`Action ${n+1}: storage ID unknown`);if(a.toStorage&&!sids.has(a.toStorage))throw Error(`Action ${n+1}: destination storage unknown`);if(a.type==='transfer'&&!a.toOwner)throw Error(`Action ${n+1}: toOwner required`);if(a.type==='move'&&!Object.hasOwn(a,'toStorage'))throw Error(`Action ${n+1}: toStorage field required`);}return block.actions;}
+  async function findMatches(key,a){const st=await getState(key);return st.items.filter(i=>i.name.toLowerCase()===String(a.item).toLowerCase()&&i.ownerId===(a.owner||'')&&i.storageId===(a.storage||''));}
+  async function applyOne(key,a){if(a.type==='add'){await addItem(key,a.item,a.quantity||1,a.owner||'',a.storage||'',a.description||'');return `+ ${a.item} ×${a.quantity||1}`;}if(a.type==='create_storage'){await addStorage(key,a.name,a.storageType||'container',a.owner||'',a.description||'');return `Storage created: ${a.name}`;}
+    const matches=await findMatches(key,a);const available=matches.reduce((n,i)=>n+i.quantity,0);const quantity=Math.min(Number(a.quantity||available),available);if(!available||quantity<1)throw Error(`No available item: ${a.item}`);let rem=quantity;
+    for(const i of matches){if(rem<=0)break;const take=Math.min(rem,i.quantity);rem-=take;
+      if(['remove','consume'].includes(a.type)){i.quantity-=take;if(i.quantity<=0)await dbOp('items','readwrite',s=>s.delete([key,i.itemId]));else await dbOp('items','readwrite',s=>s.put(i));await log(key,a.type,{item:i.name,quantity:take});}
+      else if(a.type==='transfer'){if(take===i.quantity){i.ownerId=a.toOwner;await dbOp('items','readwrite',s=>s.put(i));}else{i.quantity-=take;await dbOp('items','readwrite',s=>s.put(i));await addItem(key,i.name,take,a.toOwner,i.storageId,i.description);}await log(key,'transfer',{item:i.name,quantity:take,toOwner:a.toOwner});}
+      else if(a.type==='move'){if(take===i.quantity){i.storageId=a.toStorage||'';await dbOp('items','readwrite',s=>s.put(i));}else{i.quantity-=take;await dbOp('items','readwrite',s=>s.put(i));await addItem(key,i.name,take,i.ownerId,a.toStorage||'',i.description);}await log(key,'move',{item:i.name,quantity:take,toStorage:a.toStorage||''});}
+    }return `${a.type}: ${a.item} ×${quantity}`;}
+  async function processMessage(key,messageKey,text){
+    if(settings().autoApply===false)return {status:'disabled'};
+    const prior=await dbOp('processed','readonly',s=>s.get([key,messageKey]));if(prior)return {status:'duplicate'};
+    const block=extractActionBlock(text);if(!block)return {status:'none'};
+    const state=await getState(key),actions=validate(key,block,state);
+    // Preflight source quantities against a shadow inventory before writing anything.
+    const shadow=state.items.map(i=>({...i}));
+    for(const a of actions){
+      if(['remove','consume','transfer','move'].includes(a.type)){
+        const matches=shadow.filter(i=>i.name.toLowerCase()===String(a.item).toLowerCase()&&i.ownerId===(a.owner||'')&&i.storageId===(a.storage||''));
+        const total=matches.reduce((n,i)=>n+i.quantity,0),requested=Number(a.quantity||total);
+        if(total<requested)throw new Error(`Insufficient quantity for ${a.item}: ${total} available, ${requested} requested`);
+        let left=requested;for(const i of matches){const take=Math.min(left,i.quantity);i.quantity-=take;left-=take;if(left<=0)break;}
+      } else if(a.type==='add') shadow.push({name:a.item,quantity:Number(a.quantity||1),ownerId:a.owner||'',storageId:a.storage||''});
     }
-    function uid(prefix) {
-        return `${prefix}_${crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
-    }
-    function openDb() {
-        if (dbPromise) return dbPromise;
-        dbPromise = new Promise((resolve, reject) => {
-            const request = indexedDB.open(DB_NAME, DB_VERSION);
-            request.onupgradeneeded = () => {
-                const db = request.result;
-                if (!db.objectStoreNames.contains('chats')) db.createObjectStore('chats', { keyPath: 'chatKey' });
-                if (!db.objectStoreNames.contains('entities')) {
-                    const s = db.createObjectStore('entities', { keyPath: ['chatKey','entityId'] });
-                    s.createIndex('byChat', 'chatKey', { unique:false });
-                }
-                if (!db.objectStoreNames.contains('storages')) {
-                    const s = db.createObjectStore('storages', { keyPath: ['chatKey','storageId'] });
-                    s.createIndex('byChat', 'chatKey', { unique:false });
-                }
-                if (!db.objectStoreNames.contains('items')) {
-                    const s = db.createObjectStore('items', { keyPath: ['chatKey','itemId'] });
-                    s.createIndex('byChat', 'chatKey', { unique:false });
-                }
-                if (!db.objectStoreNames.contains('events')) {
-                    const s = db.createObjectStore('events', { keyPath: ['chatKey','eventId'] });
-                    s.createIndex('byChat', 'chatKey', { unique:false });
-                }
-            };
-            request.onsuccess = () => resolve(request.result);
-            request.onerror = () => reject(request.error || new Error('IndexedDB could not be opened.'));
-        });
-        return dbPromise;
-    }
-    async function txStore(storeName, mode, callback) {
-        const db = await openDb();
-        return new Promise((resolve, reject) => {
-            const tx = db.transaction(storeName, mode);
-            const store = tx.objectStore(storeName);
-            let result;
-            let requestResult;
-            try {
-                result = callback(store, tx);
-                if (result && typeof result === 'object' && 'onsuccess' in result && 'result' in result) {
-                    result.onsuccess = () => { requestResult = result.result; };
-                    result.onerror = () => reject(result.error || new Error('Database request failed.'));
-                }
-            } catch (err) { reject(err); return; }
-            tx.oncomplete = () => resolve(requestResult !== undefined ? requestResult : result);
-            tx.onerror = () => reject(tx.error || new Error('Database transaction failed.'));
-            tx.onabort = () => reject(tx.error || new Error('Database transaction aborted.'));
-        });
-    }
-    function getAllByChat(storeName, chatKey) {
-        return txStore(storeName, 'readonly', store => store.index('byChat').getAll(chatKey));
-    }
-    async function log(chatKey, action, payload) {
-        const event = { chatKey, eventId: uid('event'), action, payload, timestamp: new Date().toISOString() };
-        await txStore('events','readwrite',s=>s.put(event));
-    }
-    async function ensureChat(chatKey) {
-        const existing = await txStore('chats','readonly',s=>s.get(chatKey));
-        if (existing) return existing;
-        const ctx = context();
-        const characterName = ctx.name2 || ctx.character?.name || 'Current Character';
-        const initial = { chatKey, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString(), schemaVersion:1 };
-        await txStore('chats','readwrite',s=>s.put(initial));
-        const defaults = [
-            {entityId:'user',name:'{{user}}',kind:'user'},
-            {entityId:'char',name:characterName,kind:'char'}
-        ];
-        for (const entity of defaults) {
-            await txStore('entities','readwrite',s=>s.put({chatKey,...entity,createdAt:new Date().toISOString()}));
-        }
-        await log(chatKey,'chat_init',{entities:defaults});
-        return initial;
-    }
-    async function getState(chatKey) {
-        await ensureChat(chatKey);
-        const [entities,storages,items,events] = await Promise.all([
-            getAllByChat('entities',chatKey),getAllByChat('storages',chatKey),
-            getAllByChat('items',chatKey),getAllByChat('events',chatKey)
-        ]);
-        return { chat: await txStore('chats','readonly',s=>s.get(chatKey)), entities, storages, items,
-            events:events.sort((a,b)=>b.timestamp.localeCompare(a.timestamp)).slice(0,100) };
-    }
-    async function addEntity(chatKey, name, kind, entityId) {
-        const entity = {chatKey,entityId:entityId || uid('entity'),name:name.trim(),kind:kind || 'npc',createdAt:new Date().toISOString()};
-        await txStore('entities','readwrite',s=>s.put(entity)); await log(chatKey,'entity_add',entity); return entity;
-    }
-    async function addStorage(chatKey, name, type, ownerId, storageId, description) {
-        const storage = {chatKey,storageId:storageId || uid('storage'),name:name.trim(),type:type||'container',ownerId:ownerId||'',description:description||'',createdAt:new Date().toISOString()};
-        await txStore('storages','readwrite',s=>s.put(storage)); await log(chatKey,'storage_add',storage); return storage;
-    }
-    async function addItem(chatKey, name, quantity, ownerId, storageId, description) {
-        const item = {chatKey,itemId:uid('item'),name:name.trim(),quantity:Math.max(1,Math.floor(Number(quantity)||1)),ownerId:ownerId||'',storageId:storageId||'',description:description||'',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
-        await txStore('items','readwrite',s=>s.put(item)); await log(chatKey,'item_add',item); return item;
-    }
-    async function deleteRecord(chatKey, type, id) {
-        const storeName = type === 'entity' ? 'entities' : type === 'storage' ? 'storages' : 'items';
-        const keyName = type === 'entity' ? 'entityId' : type === 'storage' ? 'storageId' : 'itemId';
-        const old = await txStore(storeName,'readonly',s=>s.get([chatKey,id]));
-        await txStore(storeName,'readwrite',s=>s.delete([chatKey,id]));
-        if (type === 'storage') {
-            const items = await getAllByChat('items',chatKey);
-            for (const item of items.filter(x=>x.storageId===id)) {
-                item.storageId=''; item.updatedAt=new Date().toISOString();
-                await txStore('items','readwrite',s=>s.put(item));
-            }
-        }
-        await log(chatKey,`${type}_delete`,old || {[keyName]:id});
-    }
-    async function moveItem(chatKey, itemId, ownerId, storageId) {
-        const item = await txStore('items','readonly',s=>s.get([chatKey,itemId]));
-        if (!item) throw new Error('Item not found.');
-        const before = {ownerId:item.ownerId,storageId:item.storageId};
-        item.ownerId=ownerId||''; item.storageId=storageId||''; item.updatedAt=new Date().toISOString();
-        await txStore('items','readwrite',s=>s.put(item));
-        await log(chatKey,'item_move',{itemId,from:before,to:{ownerId:item.ownerId,storageId:item.storageId}});
-    }
-    async function exportChat(chatKey) {
-        const state = await getState(chatKey);
-        const blob = new Blob([JSON.stringify(state,null,2)],{type:'application/json'});
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href=url; a.download=`inventory-backup-${new Date().toISOString().slice(0,10)}.json`; a.click();
-        setTimeout(()=>URL.revokeObjectURL(url),1000);
-    }
-    async function importChat(chatKey, file) {
-        const parsed = JSON.parse(await file.text());
-        if (!parsed || !Array.isArray(parsed.entities) || !Array.isArray(parsed.items) || !Array.isArray(parsed.storages)) throw new Error('This file does not look like an Inventory System backup.');
-        await ensureChat(chatKey);
-        for (const store of ['entities','storages','items','events']) {
-            const rows = parsed[store] || [];
-            for (const row of rows) {
-                const copy={...row,chatKey};
-                if (store==='events' && !copy.eventId) copy.eventId=uid('event');
-                await txStore(store,'readwrite',s=>s.put(copy));
-            }
-        }
-        await log(chatKey,'backup_import',{filename:file.name});
-    }
-    const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    function buildPanel() {
-        if (document.getElementById(PANEL_ID)) return;
-        const root=document.querySelector('#extensions_settings');
-        if(!root) return;
-        panel=document.createElement('div'); panel.id=PANEL_ID; panel.className='inline-drawer';
-        panel.innerHTML=`<div class="inline-drawer-toggle inline-drawer-header"><b>Inventory System · v0.1.0</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div></div>
-          <div class="inline-drawer-content">
-            <div class="is-toolbar"><button class="menu_button" id="is-refresh">Refresh</button><button class="menu_button" id="is-export">Export backup</button><label class="menu_button is-import-label">Import backup<input id="is-import" type="file" accept=".json,application/json" hidden></label></div>
-            <div id="is-chat-label" class="is-muted"></div>
-            <div id="is-main">Open a chat to load inventory.</div>
-            <details class="is-form"><summary>Add character / NPC</summary><div class="is-grid"><input id="is-entity-name" placeholder="Name"><select id="is-entity-kind"><option value="npc">NPC</option><option value="user">User</option><option value="char">Character</option></select><input id="is-entity-id" placeholder="Optional ID"><button class="menu_button" id="is-add-entity">Create</button></div></details>
-            <details class="is-form"><summary>Add storage / container</summary><div class="is-grid"><input id="is-storage-name" placeholder="Storage name"><select id="is-storage-type"><option value="bag">Bag</option><option value="backpack">Backpack</option><option value="spatial_ring">Spatial ring</option><option value="spatial_pocket">Spatial pocket</option><option value="chest">Chest</option><option value="container">Other container</option></select><select id="is-storage-owner"><option value="">Owner (optional)</option></select><input id="is-storage-id" placeholder="Optional storage ID"><input id="is-storage-desc" placeholder="Description"><button class="menu_button" id="is-add-storage">Create</button></div></details>
-            <details class="is-form" open><summary>Add item</summary><div class="is-grid"><input id="is-item-name" placeholder="Item name"><input id="is-item-qty" type="number" min="1" value="1"><select id="is-item-owner"><option value="">Owner</option></select><select id="is-item-storage"><option value="">Carried / not in container</option></select><input id="is-item-desc" placeholder="Description / notes"><button class="menu_button" id="is-add-item">Add item</button></div></details>
-            <div class="is-footnote">Data is stored in this browser's IndexedDB, separate from chat messages. Export backups regularly.</div>
-          </div>`;
-        root.append(panel);
-        panel.querySelector('.inline-drawer-toggle').onclick=()=>{const c=panel.querySelector('.inline-drawer-content');c.classList.toggle('open');panel.querySelector('.inline-drawer-icon').classList.toggle('fa-circle-chevron-down');panel.querySelector('.inline-drawer-icon').classList.toggle('fa-circle-chevron-up');};
-        panel.querySelector('#is-refresh').onclick=refresh;
-        panel.querySelector('#is-export').onclick=()=>activeChatKey&&exportChat(activeChatKey);
-        panel.querySelector('#is-import').onchange=async e=>{const file=e.target.files?.[0];if(!file||!activeChatKey)return;try{await importChat(activeChatKey,file);await refresh();toastr.success('Backup imported.');}catch(err){toastr.error(err.message,'Inventory System');}e.target.value='';};
-        panel.querySelector('#is-add-entity').onclick=async()=>{
-            const name=panel.querySelector('#is-entity-name').value.trim(); if(!name)return toastr.warning('Enter a name.');
-            const kind=panel.querySelector('#is-entity-kind').value; const id=panel.querySelector('#is-entity-id').value.trim()||undefined;
-            try{await addEntity(activeChatKey,name,kind,id);panel.querySelector('#is-entity-name').value='';panel.querySelector('#is-entity-id').value='';await refresh();}catch(e){toastr.error(e.message);}
-        };
-        panel.querySelector('#is-add-storage').onclick=async()=>{
-            const name=panel.querySelector('#is-storage-name').value.trim();if(!name)return toastr.warning('Enter storage name.');
-            try{await addStorage(activeChatKey,name,panel.querySelector('#is-storage-type').value,panel.querySelector('#is-storage-owner').value,panel.querySelector('#is-storage-id').value.trim()||undefined,panel.querySelector('#is-storage-desc').value);await refresh();}catch(e){toastr.error(e.message);}
-        };
-        panel.querySelector('#is-add-item').onclick=async()=>{
-            const name=panel.querySelector('#is-item-name').value.trim();if(!name)return toastr.warning('Enter item name.');
-            try{await addItem(activeChatKey,name,panel.querySelector('#is-item-qty').value,panel.querySelector('#is-item-owner').value,panel.querySelector('#is-item-storage').value,panel.querySelector('#is-item-desc').value);panel.querySelector('#is-item-name').value='';panel.querySelector('#is-item-desc').value='';await refresh();}catch(e){toastr.error(e.message);}
-        };
-    }
-    function render() {
-        if(!panel||!cachedState)return;
-        const {entities,storages,items}=cachedState;
-        const ownerSelects=['#is-item-owner','#is-storage-owner'];
-        for(const sel of ownerSelects){
-            const el=panel.querySelector(sel);const old=el.value;
-            el.innerHTML=(sel==='#is-storage-owner'?'<option value="">Owner (optional)</option>':'<option value="">Owner</option>')+entities.map(e=>`<option value="${esc(e.entityId)}">${esc(e.name)} · ${esc(e.entityId)}</option>`).join('');
-            if(old)el.value=old;
-        }
-        const storageEl=panel.querySelector('#is-item-storage');const oldStorage=storageEl.value;
-        storageEl.innerHTML='<option value="">Carried / not in container</option>'+storages.map(s=>`<option value="${esc(s.storageId)}">${esc(s.name)} · ${esc(s.storageId)}</option>`).join('');
-        if(oldStorage)storageEl.value=oldStorage;
-        let html='<div class="is-section"><h4>Characters / NPCs</h4><ul>';
-        html+=entities.map(e=>`<li><span><strong>${esc(e.name)}</strong> <span class="is-muted">${esc(e.kind)} · ${esc(e.entityId)}</span></span><button class="menu_button is-delete" data-type="entity" data-id="${esc(e.entityId)}">Delete</button></li>`).join('')||'<li>None</li>';
-        html+='</ul></div><div class="is-section"><h4>Storages</h4><ul>';
-        html+=storages.map(s=>`<li><span><strong>${esc(s.name)}</strong> <span class="is-muted">${esc(s.type)} · ${esc(s.storageId)} · owner ${esc(s.ownerId||'—')}</span></span><button class="menu_button is-delete" data-type="storage" data-id="${esc(s.storageId)}">Delete</button></li>`).join('')||'<li>None</li>';
-        html+='</ul></div><div class="is-section"><h4>Items</h4><ul>';
-        html+=items.map(i=>{const owner=entities.find(e=>e.entityId===i.ownerId)?.name||i.ownerId||'Unassigned';const storage=storages.find(s=>s.storageId===i.storageId)?.name||'Carried';return `<li class="is-item"><span><strong>${esc(i.name)} ×${esc(i.quantity)}</strong><span class="is-muted">Owner: ${esc(owner)} · Location: ${esc(storage)}</span>${i.description?`<span class="is-muted">${esc(i.description)}</span>`:''}<span class="is-move"><select data-move-owner="${esc(i.itemId)}"><option value="">Owner</option>${entities.map(e=>`<option value="${esc(e.entityId)}" ${e.entityId===i.ownerId?'selected':''}>${esc(e.name)}</option>`).join('')}</select><select data-move-storage="${esc(i.itemId)}"><option value="">Carried</option>${storages.map(s=>`<option value="${esc(s.storageId)}" ${s.storageId===i.storageId?'selected':''}>${esc(s.name)}</option>`).join('')}</select><button class="menu_button" data-move="${esc(i.itemId)}">Move</button></span></span><button class="menu_button is-delete" data-type="item" data-id="${esc(i.itemId)}">Delete</button></li>`}).join('')||'<li>Empty inventory</li>';
-        html+='</ul></div><div class="is-section"><h4>Recent changes</h4><ul>';
-        html+=(cachedState.events||[]).slice(0,10).map(ev=>`<li><span>${esc(ev.action)} <span class="is-muted">${new Date(ev.timestamp).toLocaleString()}</span></span></li>`).join('')||'<li>No events yet</li>';
-        panel.querySelector('#is-main').innerHTML=html;
-        panel.querySelectorAll('.is-delete').forEach(btn=>btn.onclick=async()=>{if(!confirm('Delete this record?'))return;try{await deleteRecord(activeChatKey,btn.dataset.type,btn.dataset.id);await refresh();}catch(e){toastr.error(e.message);}});
-        panel.querySelectorAll('[data-move]').forEach(btn=>btn.onclick=async()=>{const itemId=btn.dataset.move;const owner=panel.querySelector(`[data-move-owner="${CSS.escape(itemId)}"]`).value;const storage=panel.querySelector(`[data-move-storage="${CSS.escape(itemId)}"]`).value;try{await moveItem(activeChatKey,itemId,owner,storage);await refresh();}catch(e){toastr.error(e.message);}});
-    }
-    async function refresh() {
-        if(!panel)buildPanel();
-        const chatKey=getChatKey();
-        activeChatKey=chatKey;
-        if(!chatKey){cachedState=null;panel.querySelector('#is-chat-label').textContent='No active chat. Open a chat to create its inventory.';panel.querySelector('#is-main').textContent='Inventory will initialize when a chat is selected.';return;}
-        panel.querySelector('#is-chat-label').textContent=`Separate inventory database · ${chatKey}`;
-        try{cachedState=await getState(chatKey);render();}catch(e){panel.querySelector('#is-main').textContent=`Database error: ${e.message}`;console.error(`[${EXT}]`,e);}
-    }
-    async function inventorySystemPromptInterceptor(chat) {
-        try{
-            const chatKey=getChatKey();if(!chatKey)return chat;
-            const state=await getState(chatKey);
-            const lines=['[INVENTORY SYSTEM — CURRENT STATE]','Inventory state below is the registered source of truth. Mentioned items are not automatically registered. Do not assume items exist unless listed.'];
-            for(const entity of state.entities){
-                lines.push(`Entity: ${entity.name} (ID: ${entity.entityId}, type: ${entity.kind})`);
-                const owned=state.items.filter(item=>item.ownerId===entity.entityId);
-                if(!owned.length)lines.push('- No registered items.');
-                for(const item of owned){
-                    const storage=state.storages.find(s=>s.storageId===item.storageId);
-                    lines.push(`- ${item.name} x${item.quantity}${storage?` [in ${storage.name}]`:' [carried]'}${item.description?` — ${item.description}`:''}`);
-                }
-            }
-            for(const storage of state.storages){
-                lines.push(`Storage: ${storage.name} (ID: ${storage.storageId}, type: ${storage.type}, owner: ${storage.ownerId||'unassigned'})`);
-            }
-            lines.push('Prototype note: inventory changes are not yet auto-committed from AI prose. Only changes made in the extension UI are persisted.');
-            chat.push({is_system:true,mes:lines.join('\n'),name:'Inventory System'});
-            return chat;
-        }catch(err){console.warn(`[${EXT}] Prompt injection skipped`,err);return chat;}
-    }
-    globalThis.inventorySystemPromptInterceptor=inventorySystemPromptInterceptor;
-    function init(){
-        buildPanel();
-        const ctx=context();
-        ctx.eventSource.on(ctx.event_types.APP_READY,buildPanel);
-        ctx.eventSource.on(ctx.event_types.APP_READY,refresh);
-        ctx.eventSource.on(ctx.event_types.CHAT_CHANGED,refresh);
-    }
-    init();
+    const applied=[];for(const a of actions)applied.push(await applyOne(key,a));
+    await dbOp('processed','readwrite',s=>s.put({chatKey:key,messageKey,processedAt:new Date().toISOString()}));
+    return {status:'applied',result:applied};
+  }
+  function buildPanel(){if(document.getElementById(PANEL))return;const root=document.querySelector('#extensions_settings');if(!root)return;panel=document.createElement('div');panel.id=PANEL;panel.className='inline-drawer';panel.innerHTML=`<div class="inline-drawer-toggle inline-drawer-header"><b>Inventory System · v0.2.0</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div></div><div class="inline-drawer-content"><div class="inv-toolbar"><button class="menu_button" id="inv-refresh">Refresh</button><button class="menu_button" id="inv-backup">Backup</button><label class="menu_button">Restore<input id="inv-restore" type="file" accept=".json" hidden></label><label class="inv-auto"><input id="inv-auto" type="checkbox"> Auto-apply AI changes</label></div><div id="inv-chat" class="inv-small"></div><div id="inv-status" class="inv-status"></div><div id="inv-content"></div><details class="inv-form"><summary>Create entity / NPC</summary><div class="inv-grid"><input id="inv-entity-name" placeholder="Name"><select id="inv-entity-kind"><option value="npc">NPC</option><option value="user">User</option><option value="char">Character</option></select><input id="inv-entity-id" placeholder="ID (optional)"><button class="menu_button" id="inv-add-entity">Create</button></div></details><details class="inv-form"><summary>Create storage</summary><div class="inv-grid"><input id="inv-storage-name" placeholder="Storage name"><select id="inv-storage-type"><option value="bag">Bag</option><option value="backpack">Backpack</option><option value="spatial_ring">Spatial ring</option><option value="spatial_pocket">Spatial pocket</option><option value="container">Container</option></select><select id="inv-storage-owner"><option value="">Owner</option></select><input id="inv-storage-desc" placeholder="Description"><button class="menu_button" id="inv-add-storage">Create</button></div></details><details class="inv-form" open><summary>Add item</summary><div class="inv-grid"><input id="inv-item-name" placeholder="Item name"><input id="inv-item-qty" type="number" min="1" value="1"><select id="inv-item-owner"><option value="">Owner</option></select><select id="inv-item-storage"><option value="">Carried</option></select><input id="inv-item-desc" placeholder="Description"><button class="menu_button" id="inv-add-item">Add</button></div></details><p class="inv-note">AI changes are experimental. Export backups regularly.</p></div>`;root.append(panel);
+    panel.querySelector('.inline-drawer-toggle').onclick=()=>{const c=panel.querySelector('.inline-drawer-content');c.classList.toggle('open');panel.querySelector('.inline-drawer-icon').classList.toggle('fa-circle-chevron-down');panel.querySelector('.inline-drawer-icon').classList.toggle('fa-circle-chevron-up');};
+    panel.querySelector('#inv-auto').checked=settings().autoApply!==false;panel.querySelector('#inv-auto').onchange=e=>saveSettings({...settings(),autoApply:e.target.checked});panel.querySelector('#inv-refresh').onclick=refresh;panel.querySelector('#inv-backup').onclick=()=>currentKey&&exportBackup(currentKey);panel.querySelector('#inv-restore').onchange=async e=>{const f=e.target.files?.[0];if(!f||!currentKey)return;try{await importBackup(currentKey,f);await refresh();toastr.success('Inventory backup restored');}catch(err){toastr.error(err.message);}e.target.value='';};
+    panel.querySelector('#inv-add-entity').onclick=async()=>{const n=panel.querySelector('#inv-entity-name').value.trim();if(!n)return toastr.warning('Name required');await addEntity(currentKey,n,panel.querySelector('#inv-entity-kind').value,panel.querySelector('#inv-entity-id').value.trim()||undefined);await refresh();};
+    panel.querySelector('#inv-add-storage').onclick=async()=>{const n=panel.querySelector('#inv-storage-name').value.trim();if(!n)return toastr.warning('Storage name required');await addStorage(currentKey,n,panel.querySelector('#inv-storage-type').value,panel.querySelector('#inv-storage-owner').value,panel.querySelector('#inv-storage-desc').value);await refresh();};
+    panel.querySelector('#inv-add-item').onclick=async()=>{const n=panel.querySelector('#inv-item-name').value.trim();if(!n)return toastr.warning('Item name required');await addItem(currentKey,n,panel.querySelector('#inv-item-qty').value,panel.querySelector('#inv-item-owner').value,panel.querySelector('#inv-item-storage').value,panel.querySelector('#inv-item-desc').value);panel.querySelector('#inv-item-name').value='';await refresh();};}
+  function render(){if(!panel||!currentState)return;const {entities,storages,items,events}=currentState;for(const selector of ['#inv-item-owner','#inv-storage-owner']){const el=panel.querySelector(selector),old=el.value;el.innerHTML='<option value="">Owner (optional)</option>'+entities.map(e=>`<option value="${escapeHtml(e.entityId)}">${escapeHtml(e.name)}</option>`).join('');if(old)el.value=old;}const stSel=panel.querySelector('#inv-item-storage'),oldS=stSel.value;stSel.innerHTML='<option value="">Carried</option>'+storages.map(s=>`<option value="${escapeHtml(s.storageId)}">${escapeHtml(s.name)}</option>`).join('');if(oldS)stSel.value=oldS;
+    let html='<div class="inv-section"><b>Entities</b><ul>'+entities.map(e=>`<li><span><b>${escapeHtml(e.name)}</b><small>${escapeHtml(e.kind)} · ${escapeHtml(e.entityId)}</small></span><button class="menu_button inv-delete" data-type="entity" data-id="${escapeHtml(e.entityId)}">×</button></li>`).join('')+'</ul></div><div class="inv-section"><b>Storages</b><ul>'+storages.map(s=>`<li><span><b>${escapeHtml(s.name)}</b><small>${escapeHtml(s.type)} · owner ${escapeHtml(s.ownerId||'—')}</small></span><button class="menu_button inv-delete" data-type="storage" data-id="${escapeHtml(s.storageId)}">×</button></li>`).join('')+'</ul></div><div class="inv-section"><b>Items</b><ul>'+items.map(i=>{const owner=entities.find(e=>e.entityId===i.ownerId)?.name||i.ownerId||'Unassigned',loc=storages.find(s=>s.storageId===i.storageId)?.name||'Carried';return `<li><span><b>${escapeHtml(i.name)} ×${escapeHtml(i.quantity)}</b><small>Owner: ${escapeHtml(owner)} · Location: ${escapeHtml(loc)}</small>${i.description?`<small>${escapeHtml(i.description)}</small>`:''}<span class="inv-move"><select data-owner="${escapeHtml(i.itemId)}"><option value="">Owner</option>${entities.map(e=>`<option value="${escapeHtml(e.entityId)}" ${e.entityId===i.ownerId?'selected':''}>${escapeHtml(e.name)}</option>`).join('')}</select><select data-storage="${escapeHtml(i.itemId)}"><option value="">Carried</option>${storages.map(s=>`<option value="${escapeHtml(s.storageId)}" ${s.storageId===i.storageId?'selected':''}>${escapeHtml(s.name)}</option>`).join('')}</select><button class="menu_button" data-move="${escapeHtml(i.itemId)}">Move</button></span></span><button class="menu_button inv-delete" data-type="item" data-id="${escapeHtml(i.itemId)}">×</button></li>`}).join('')+'</ul></div><div class="inv-section"><b>Activity</b><ul>'+events.slice(0,10).map(e=>`<li><span>${escapeHtml(e.action)}<small>${new Date(e.timestamp).toLocaleString()}</small></span></li>`).join('')+'</ul></div>';panel.querySelector('#inv-content').innerHTML=html;
+    panel.querySelectorAll('.inv-delete').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this entry?'))return;await deleteRow(currentKey,b.dataset.type,b.dataset.id);await refresh();});panel.querySelectorAll('[data-move]').forEach(b=>b.onclick=async()=>{const id=b.dataset.move,owner=panel.querySelector(`[data-owner="${CSS.escape(id)}"]`).value,storage=panel.querySelector(`[data-storage="${CSS.escape(id)}"]`).value;await moveItem(currentKey,id,owner,storage);await refresh();});}
+  async function refresh(){if(!panel)buildPanel();currentKey=chatKey();if(!currentKey){panel.querySelector('#inv-chat').textContent='Open a chat to begin';return;}panel.querySelector('#inv-chat').textContent=`Separate local database · ${currentKey}`;try{currentState=await getState(currentKey);render();}catch(e){panel.querySelector('#inv-content').textContent=e.message;}}
+  async function inventorySystemPromptInterceptor(chat){try{const key=chatKey();if(!key)return chat;const s=await getState(key);const lines=['[INVENTORY SYSTEM — CURRENT STATE AND ACTION FORMAT]','Registered state is authoritative. Mentioning an object does not mean it is owned. Only completed explicit story actions should be recorded.','If inventory changed during this response, append one hidden comment: <!-- INVENTORY_ACTIONS {"actions":[...]} --> with valid JSON. No action block when nothing changed.','Actions: add {type:"add",item,quantity,owner,storage,description}; remove {type:"remove",item,quantity,owner,storage}; consume {type:"consume",item,quantity,owner,storage}; transfer {type:"transfer",item,quantity,owner,storage,toOwner}; move {type:"move",item,quantity,owner,storage,toStorage}; create_storage {type:"create_storage",name,storageType,owner,description}.','Owner and storage values must use exact IDs below. Empty string means carried/no container. Item name matching is case-insensitive. Maximum 20 operations.'];for(const e of s.entities){lines.push(`Entity ${e.name} (ID=${e.entityId}, kind=${e.kind})`);const own=s.items.filter(i=>i.ownerId===e.entityId);if(!own.length)lines.push('- Empty');for(const i of own){const loc=s.storages.find(x=>x.storageId===i.storageId);lines.push(`- ${i.name} ×${i.quantity}${loc?` in ${loc.name} [${loc.storageId}]`:' carried'}${i.description?` — ${i.description}`:''}`);}}for(const st of s.storages)lines.push(`Storage ${st.name} (ID=${st.storageId}, type=${st.type}, owner=${st.ownerId||'none'})`);const note={is_user:false,name:'Inventory System',mes:lines.join('\n'),send_date:Date.now(),extra:{inventory_system:true}};const lastUser=chat.findLastIndex?chat.findLastIndex(m=>m.is_user||m.role==='user'):-1;chat.splice(lastUser>=0?lastUser:chat.length,0,note);return chat;}catch(e){console.warn('[Inventory System] Prompt injection error',e);return chat;}}
+  globalThis.inventorySystemPromptInterceptor=inventorySystemPromptInterceptor;
+  async function messageReceived(){try{const key=chatKey();if(!key)return;const c=context(),chat=c.chat||[],m=chat[chat.length-1];if(!m||m.is_user||m.role==='user')return;const text=m.mes||m.message||m.content||'';if(!text.includes('INVENTORY_ACTIONS'))return;const msgKey=String(m.mesId||m.id||m.send_date||`${chat.length}_${text.slice(0,100)}`);const res=await processMessage(key,msgKey,text);if(res.status==='applied'){panel?.querySelector('#inv-status')&&(panel.querySelector('#inv-status').textContent=res.result.join(' · '));await refresh();toastr.success(`Inventory updated: ${res.result.length} action(s)`);}else if(res.status==='disabled')toastr.info('AI inventory updates are disabled.');}catch(e){panel?.querySelector('#inv-status')&&(panel.querySelector('#inv-status').textContent=`Action error: ${e.message}`);toastr.warning(`No inventory update: ${e.message}`,'Inventory System');console.warn(e);}}
+  function init(){buildPanel();const c=context();c.eventSource.on(c.event_types.APP_READY,buildPanel);c.eventSource.on(c.event_types.APP_READY,refresh);c.eventSource.on(c.event_types.CHAT_CHANGED,refresh);c.eventSource.on(c.event_types.MESSAGE_RECEIVED,messageReceived);}init();
 })();
