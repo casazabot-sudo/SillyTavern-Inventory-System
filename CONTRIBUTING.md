@@ -1,1 +1,0 @@
-Contributions should preserve chat-local database isolation, private per-character inventories, and validation of AI action blocks. Keep changes generic for fantasy roleplay; avoid sending private inventory contents into generation prompts.
